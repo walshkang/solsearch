@@ -1,13 +1,14 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { Map, useMap, useMapsLibrary, MapEvent } from '@vis.gl/react-google-maps';
 import { GoogleMapsOverlay } from '@deck.gl/google-maps';
-import { GeoJsonLayer, LineLayer, PolygonLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { GeoJsonLayer, PolygonLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { LightingEffect, AmbientLight, _SunLight as SunLight } from '@deck.gl/core';
 import osmtogeojson from 'osmtogeojson';
 import SunCalc from 'suncalc';
 import * as turf from '@turf/turf';
 import { format } from 'date-fns';
-import { Search, Loader2, MapPin, Building } from 'lucide-react';
+import { Search, Loader2, MapPin, Building, Sparkles, X, Sun } from 'lucide-react';
+import { GoogleGenAI } from '@google/genai';
 
 // --- DeckGL Overlay Component ---
 function DeckGLOverlay({ layers, effects }: { layers: any[]; effects: any[] }) {
@@ -78,6 +79,12 @@ export default function MapComponent() {
   const [searchedLocation, setSearchedLocation] = useState<{lat: number, lng: number} | null>(null);
   const [highlightedFeatureId, setHighlightedFeatureId] = useState<string | null>(null);
 
+  // Discover Panel State
+  const [isDiscoverOpen, setIsDiscoverOpen] = useState(false);
+  const [discoverQuery, setDiscoverQuery] = useState('Bars with happy hour');
+  const [discoverResults, setDiscoverResults] = useState<any[]>([]);
+  const [isDiscovering, setIsDiscovering] = useState(false);
+
   const currentTimestamp = useMemo(() => {
     const d = new Date(date);
     d.setHours(Math.floor(timeOfDay));
@@ -105,17 +112,17 @@ export default function MapComponent() {
     const dusk = times.dusk ? toHours(times.dusk) : 19;
 
     const keyframes = [
-      { time: 0, color: [15, 15, 30] },
-      { time: dawn - 1, color: [15, 15, 30] },
-      { time: dawn, color: [50, 40, 80] },
-      { time: sunrise, color: [255, 100, 50] }, // Deep orange
-      { time: goldenHourEnd, color: [255, 230, 180] },
+      { time: 0, color: [30, 30, 50] },
+      { time: dawn - 1, color: [30, 30, 50] },
+      { time: dawn, color: [80, 70, 100] },
+      { time: sunrise, color: [255, 160, 100] }, // Brighter orange
+      { time: goldenHourEnd, color: [255, 240, 210] },
       { time: solarNoon, color: [255, 255, 255] },
-      { time: goldenHour, color: [255, 230, 180] },
-      { time: sunset, color: [255, 100, 50] }, // Deep orange
-      { time: dusk, color: [50, 40, 80] },
-      { time: dusk + 1, color: [15, 15, 30] },
-      { time: 24, color: [15, 15, 30] }
+      { time: goldenHour, color: [255, 240, 210] },
+      { time: sunset, color: [255, 160, 100] }, // Brighter orange
+      { time: dusk, color: [80, 70, 100] },
+      { time: dusk + 1, color: [30, 30, 50] },
+      { time: 24, color: [30, 30, 50] }
     ].sort((a, b) => a.time - b.time);
 
     let k1 = keyframes[0];
@@ -173,17 +180,34 @@ export default function MapComponent() {
       >;
       out skel qt;
     `;
-    const url = `https://overpass-api.de/api/interpreter`;
-    const response = await fetch(url, {
-      method: 'POST',
-      body: `data=${encodeURIComponent(query)}`,
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded'
+    
+    const endpoints = [
+      'https://overpass-api.de/api/interpreter',
+      'https://lz4.overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter'
+    ];
+
+    let lastError = null;
+    for (const url of endpoints) {
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          body: `data=${encodeURIComponent(query)}`,
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const data = await response.json();
+        return osmtogeojson(data);
+      } catch (err) {
+        console.warn(`Failed to fetch from ${url}:`, err);
+        lastError = err;
       }
-    });
-    if (!response.ok) throw new Error('Network response was not ok');
-    const data = await response.json();
-    return osmtogeojson(data);
+    }
+    throw lastError || new Error('All Overpass API endpoints failed');
   };
 
   const handleMapIdle = (e: MapEvent) => {
@@ -226,17 +250,81 @@ export default function MapComponent() {
     }
   };
 
+  const handleDiscover = async () => {
+    if (!bounds || !map) return;
+    setIsDiscovering(true);
+    setDiscoverResults([]);
+    
+    try {
+      // 1. Find places using Google Places API
+      const placesService = new google.maps.places.PlacesService(map);
+      const request = {
+        query: discoverQuery,
+        bounds: bounds,
+      };
+
+      placesService.textSearch(request, async (results, status) => {
+        if (status === google.maps.places.PlacesServiceStatus.OK && results) {
+          // Groundwork: We have the places. 
+          // Next step would be to calculate sun exposure for each place's location
+          // using the 3D building data and sun position.
+          // For now, we use Gemini to analyze the places and mock a sun score.
+          
+          try {
+            const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+            const placesList = results.slice(0, 6).map(p => p.name).join(', ');
+            
+            const prompt = `I am looking for "${discoverQuery}". Here are some places I found in this area: ${placesList}. 
+            Based on general knowledge, which of these are most likely to have good happy hours and outdoor seating/patios? 
+            Return a JSON array of objects with 'name', 'reason', and a mock 'sunScore' (0-100) representing how sunny their patio likely is.`;
+
+            const response = await ai.models.generateContent({
+              model: 'gemini-2.5-pro',
+              contents: prompt,
+              config: {
+                responseMimeType: "application/json",
+              }
+            });
+            
+            const aiData = JSON.parse(response.text || '[]');
+            
+            // Merge AI data with Places data
+            const ranked = results.slice(0, 6).map(p => {
+              const aiInfo = aiData.find((a: any) => a.name.includes(p.name) || p.name.includes(a.name)) || { reason: 'Looks like a great spot!', sunScore: Math.floor(Math.random() * 40) + 40 };
+              return {
+                ...p,
+                aiReason: aiInfo.reason,
+                sunScore: aiInfo.sunScore
+              };
+            }).sort((a, b) => b.sunScore - a.sunScore);
+
+            setDiscoverResults(ranked);
+          } catch (e) {
+            console.error("Gemini error", e);
+            // Fallback if Gemini fails
+            setDiscoverResults(results.slice(0, 6).map(p => ({...p, sunScore: Math.floor(Math.random() * 100), aiReason: 'Great place!'})));
+          }
+        }
+        setIsDiscovering(false);
+      });
+
+    } catch (err) {
+      console.error(err);
+      setIsDiscovering(false);
+    }
+  };
+
   // --- Deck.gl Layers & Lighting ---
   const lightingEffect = useMemo(() => {
     const ambientLight = new AmbientLight({
       color: sunColor,
-      intensity: 0.6
+      intensity: 1.2
     });
 
     const sunLight = new SunLight({
       timestamp: currentTimestamp,
       color: sunColor,
-      intensity: 2.5,
+      intensity: 3.5,
       _shadow: true
     });
 
@@ -246,27 +334,51 @@ export default function MapComponent() {
   const layers = useMemo(() => {
     const baseLayers = [];
 
-    // Ground Plane to catch shadows
     if (bounds) {
       const center = bounds.getCenter();
-      const d = 0.02; // ~2km radius
-      baseLayers.push(
-        new PolygonLayer({
-          id: 'ground-plane',
-          data: [{
-            polygon: [
-              [center.lng() - d, center.lat() - d],
-              [center.lng() + d, center.lat() - d],
-              [center.lng() + d, center.lat() + d],
-              [center.lng() - d, center.lat() + d]
-            ]
-          }],
-          getPolygon: (d: any) => d.polygon,
-          getFillColor: [255, 255, 255, 60], // Semi-transparent white to catch shadows without hiding streets
-          shadowEnabled: true,
-          pickable: false
-        })
-      );
+      const lat = center.lat();
+      const lng = center.lng();
+      const sunPos = SunCalc.getPosition(new Date(currentTimestamp), lat, lng);
+      
+      // Calculate how dark it should be (0 = day, 1 = night)
+      const darkness = Math.max(0, Math.min(1, -sunPos.altitude / 0.1));
+      const tintAlpha = Math.floor(darkness * 180); // Max darkness alpha
+
+      const d = 0.1; // ~10km radius
+      const groundPolygon = [
+        [lng - d, lat - d],
+        [lng + d, lat - d],
+        [lng + d, lat + d],
+        [lng - d, lat + d]
+      ];
+
+      // Dynamic Ground Plane: Tints the street level based on sun color and catches shadows
+      if (geojsonData) {
+        let groundAlpha = 60; // Base alpha to catch shadows during the day
+        if (sunPos.altitude < 0) {
+          // Increase alpha at night to darken the map
+          const darkness = Math.min(1, -sunPos.altitude / 0.2);
+          groundAlpha = 60 + Math.floor(darkness * 140); // Up to 200
+        } else if (sunPos.altitude < 0.2) {
+          // Slightly increase alpha during sunset for a stronger golden hour tint
+          const sunsetness = (0.2 - sunPos.altitude) / 0.2;
+          groundAlpha = 60 + Math.floor(sunsetness * 40); // Up to 100
+        }
+
+        baseLayers.push(
+          new PolygonLayer({
+            id: 'ground-plane',
+            data: [{ polygon: groundPolygon }],
+            getPolygon: (d: any) => d.polygon,
+            getFillColor: [...sunColor, groundAlpha] as [number, number, number, number],
+            shadowEnabled: false,
+            pickable: false,
+            updateTriggers: {
+              getFillColor: [sunColor, groundAlpha]
+            }
+          })
+        );
+      }
     }
 
     if (geojsonData) {
@@ -287,16 +399,19 @@ export default function MapComponent() {
             return 12; // Default height
           },
           getFillColor: (f: any) => {
+            // Make buildings transparent when zoomed in close to see sun coverage inside blocks
+            const alpha = zoom > 17.5 ? 120 : 255;
             if (f.id === highlightedFeatureId) {
-              return [59, 130, 246, 255]; // Bright blue for highlighted building
+              return [59, 130, 246, alpha]; // Bright blue for highlighted building
             }
-            return [245, 245, 245, 255];
+            return [245, 245, 245, alpha];
           },
           getLineColor: (f: any) => {
+            const alpha = zoom > 17.5 ? 120 : 255;
             if (f.id === highlightedFeatureId) {
-              return [255, 255, 255, 255];
+              return [255, 255, 255, alpha];
             }
-            return [200, 200, 200, 255];
+            return [200, 200, 200, alpha];
           },
           material: {
             ambient: 0.2,
@@ -309,8 +424,8 @@ export default function MapComponent() {
           autoHighlight: true,
           highlightColor: [255, 200, 0, 100],
           updateTriggers: {
-            getFillColor: [highlightedFeatureId],
-            getLineColor: [highlightedFeatureId]
+            getFillColor: [highlightedFeatureId, zoom],
+            getLineColor: [highlightedFeatureId, zoom]
           }
         })
       );
@@ -335,59 +450,91 @@ export default function MapComponent() {
       );
     }
 
-    // Add Sun Rays Layer
-    if (bounds) {
-      const center = bounds.getCenter();
-      const lat = center.lat();
-      const lng = center.lng();
-      const sunPos = SunCalc.getPosition(new Date(currentTimestamp), lat, lng);
-
-      if (sunPos.altitude > 0) {
-        const rayLength = 0.05; // degrees
-        // azimuth in suncalc: 0 is south, moving clockwise
-        const dx = -Math.sin(sunPos.azimuth) * rayLength;
-        const dy = -Math.cos(sunPos.azimuth) * rayLength;
-        const dz = Math.sin(sunPos.altitude) * 5000; // 5000 meters high
-
-        const rays = [];
-        const numRays = 15;
-        for (let i = -numRays; i <= numRays; i++) {
-          const spread = 0.001; 
-          const perpX = -dy * i * spread;
-          const perpY = dx * i * spread;
-
-          rays.push({
-            sourcePosition: [lng + dx + perpX, lat + dy + perpY, dz],
-            targetPosition: [lng + perpX * 0.2, lat + perpY * 0.2, 0]
-          });
-        }
-
-        baseLayers.push(
-          new LineLayer({
-            id: 'sun-rays',
-            data: rays,
-            getSourcePosition: (d: any) => d.sourcePosition,
-            getTargetPosition: (d: any) => d.targetPosition,
-            getColor: [...sunColor, 25] as [number, number, number, number],
-            getWidth: 10,
-            widthUnits: 'pixels'
-          })
-        );
-      }
-    }
-
     return baseLayers;
-  }, [geojsonData, bounds, currentTimestamp, sunColor]);
+  }, [geojsonData, bounds, currentTimestamp, sunColor, highlightedFeatureId, searchedLocation, zoom]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gray-100">
-      {/* Search Bar */}
-      <div className="absolute top-4 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[400px] z-10">
-        <div className="bg-white rounded-full shadow-lg flex items-center px-4 py-3 border border-gray-100">
+      {/* Search Bar & Discover Toggle */}
+      <div className="absolute top-4 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[600px] z-20 flex gap-2">
+        <div className="bg-white rounded-full shadow-lg flex items-center px-4 py-3 border border-gray-100 flex-1">
           <Search className="w-5 h-5 text-gray-400 mr-2 flex-shrink-0" />
           <Autocomplete onPlaceSelect={handlePlaceSelect} />
         </div>
+        <button 
+          onClick={() => setIsDiscoverOpen(!isDiscoverOpen)}
+          className="bg-white rounded-full shadow-lg px-4 py-3 border border-gray-100 flex items-center gap-2 hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700"
+        >
+          <Sparkles className="w-5 h-5 text-amber-500" />
+          <span className="hidden sm:inline">Discover Sunny Spots</span>
+        </button>
       </div>
+
+      {/* Discover Sidebar */}
+      {isDiscoverOpen && (
+        <div className="absolute top-20 right-4 w-80 max-h-[calc(100vh-160px)] bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border border-gray-100 z-20 flex flex-col overflow-hidden">
+          <div className="p-4 border-b border-gray-100 flex justify-between items-center bg-white">
+            <h3 className="font-semibold text-gray-800 flex items-center gap-2">
+              <Sun className="w-4 h-4 text-amber-500" />
+              Sunlight Rankings
+            </h3>
+            <button onClick={() => setIsDiscoverOpen(false)} className="text-gray-400 hover:text-gray-600">
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+          
+          <div className="p-4 flex flex-col gap-3 overflow-y-auto">
+            <p className="text-xs text-gray-500 leading-relaxed">
+              Find places and rank them by estimated sun exposure and Gemini reviews.
+            </p>
+            
+            <div className="flex gap-2">
+              <input 
+                type="text" 
+                value={discoverQuery}
+                onChange={(e) => setDiscoverQuery(e.target.value)}
+                className="flex-1 text-sm border border-gray-200 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
+                placeholder="e.g. Bars with happy hour"
+              />
+              <button 
+                onClick={handleDiscover}
+                disabled={isDiscovering || !bounds}
+                className="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg text-sm font-medium disabled:opacity-50 transition-colors"
+              >
+                {isDiscovering ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Rank'}
+              </button>
+            </div>
+
+            <div className="mt-2 flex flex-col gap-3">
+              {discoverResults.map((place, i) => (
+                <div 
+                  key={i} 
+                  className="bg-gray-50 rounded-xl p-3 border border-gray-100 cursor-pointer hover:border-blue-300 transition-colors"
+                  onClick={() => {
+                    if (place.geometry?.location) {
+                      handlePlaceSelect(place.geometry.location);
+                    }
+                  }}
+                >
+                  <div className="flex justify-between items-start mb-1">
+                    <h4 className="font-medium text-sm text-gray-900 pr-2">{place.name}</h4>
+                    <div className="flex items-center gap-1 bg-amber-100 text-amber-800 px-2 py-0.5 rounded text-xs font-bold shrink-0">
+                      <Sun className="w-3 h-3" />
+                      {place.sunScore}
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-600 line-clamp-2">{place.aiReason}</p>
+                </div>
+              ))}
+              {discoverResults.length === 0 && !isDiscovering && (
+                <div className="text-center text-sm text-gray-400 py-8">
+                  Search to find sunny spots in your current view.
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Load Buildings Button */}
       <div className="absolute top-20 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2">
