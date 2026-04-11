@@ -1,0 +1,5 @@
+{
+  "name": "Sunlight Simulator",
+  "description": "An app that shows sunlight and shadows on a 3D Google Map for cafes, restaurants, and outdoor areas. Toggle by date and time to see sun exposure.",
+  "requestFramePermissions": []
+}
