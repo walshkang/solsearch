@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Map, useMap, useMapsLibrary, MapEvent } from '@vis.gl/react-google-maps';
 import { GoogleMapsOverlay } from '@deck.gl/google-maps';
-import { GeoJsonLayer, PolygonLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { PolygonLayer, ScatterplotLayer } from '@deck.gl/layers';
+import { MVTLayer } from '@deck.gl/geo-layers';
 import { LightingEffect, AmbientLight, _SunLight as SunLight } from '@deck.gl/core';
-import osmtogeojson from 'osmtogeojson';
 import SunCalc from 'suncalc';
 import * as turf from '@turf/turf';
 import { format } from 'date-fns';
@@ -153,11 +153,10 @@ export default function MapComponent() {
   };
   const [date, setDate] = useState<Date>(new Date());
 
-  const [geojsonData, setGeojsonData] = useState<any>(null);
-  const [loading, setLoading] = useState(false);
   const [bounds, setBounds] = useState<google.maps.LatLngBounds | null>(null);
   const [zoom, setZoom] = useState(16);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const tileGeojsonRef = useRef<any>(null);
+  const [tileGeojsonVersion, setTileGeojsonVersion] = useState(0);
   const [searchedLocation, setSearchedLocation] = useState<{lat: number, lng: number} | null>(null);
   const [highlightedFeatureId, setHighlightedFeatureId] = useState<string | null>(null);
   const [timelineLocation, setTimelineLocation] = useState<{lat:number,lng:number} | null>(null);
@@ -192,10 +191,11 @@ export default function MapComponent() {
   };
 
   useEffect(() => {
-    if (searchedLocation && geojsonData) {
+    const geojson = tileGeojsonRef.current;
+    if (searchedLocation && geojson) {
       const pt = turf.point([searchedLocation.lng, searchedLocation.lat]);
       let foundId = null;
-      for (const feature of geojsonData.features) {
+      for (const feature of geojson.features) {
         if (feature.geometry.type === 'Polygon' || feature.geometry.type === 'MultiPolygon') {
           if (turf.booleanPointInPolygon(pt, feature)) {
             foundId = feature.id;
@@ -207,122 +207,9 @@ export default function MapComponent() {
     } else {
       setHighlightedFeatureId(null);
     }
-  }, [searchedLocation, geojsonData]);
+  }, [searchedLocation, tileGeojsonVersion]);
 
-  const fetchOSMBuildings = async (bbox: number[], signal?: AbortSignal) => {
-    const query = `
-      [out:json][timeout:60];
-      (
-        way["building"](${bbox[1]},${bbox[0]},${bbox[3]},${bbox[2]});
-        relation["building"](${bbox[1]},${bbox[0]},${bbox[3]},${bbox[2]});
-      );
-      out body;
-      >;
-      out skel qt;
-    `;
 
-    const endpoints = [
-      'https://overpass-api.de/api/interpreter',
-      'https://lz4.overpass-api.de/api/interpreter',
-      'https://z.overpass-api.de/api/interpreter',
-      'https://overpass.kumi.systems/api/interpreter',
-      'https://overpass.openstreetmap.ru/api/interpreter'
-    ];
-
-    let lastError = null;
-    for (const url of endpoints) {
-      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
-      try {
-        const response = await fetch(url, {
-          method: 'POST',
-          body: `data=${encodeURIComponent(query)}`,
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          signal
-        });
-        // On rate-limit, stop trying other endpoints and surface the error
-        if (response.status === 429) {
-          throw new Error('Rate limited by Overpass API. Please wait a moment before moving the map.');
-        }
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        const data = await response.json();
-        return osmtogeojson(data);
-      } catch (err: any) {
-        if (err.name === 'AbortError') throw err;
-        // Don't cascade to next endpoint on rate limit
-        if (err.message?.includes('Rate limited')) throw err;
-        console.warn(`Failed to fetch from ${url}:`, err);
-        lastError = err;
-      }
-    }
-    throw lastError || new Error('All Overpass API endpoints failed');
-  };
-
-  // Refs for debounce, cancellation, last-fetched center, and global fetch cooldown
-  const debounceTimerRef = useRef<number | null>(null);
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const lastFetchedCenterRef = useRef<{lat: number, lng: number} | null>(null);
-  const lastFetchTimeRef = useRef<number>(0);
-  const FETCH_COOLDOWN_MS = 10_000; // minimum 10s between Overpass requests
-
-  // Fixed fetch radius in degrees (~400m)
-  const FETCH_RADIUS_DEG = 0.004;
-  // Re-fetch threshold: skip if center moved less than 30% of the radius
-  const REFETCH_THRESHOLD = FETCH_RADIUS_DEG * 0.3;
-
-  // Auto-load buildings with cancellation support
-  const autoLoadBuildings = async (boundsToUse: google.maps.LatLngBounds) => {
-    const center = boundsToUse.getCenter();
-    const lat = center.lat();
-    const lng = center.lng();
-
-    // Skip if we haven't moved far enough from the last fetch
-    const last = lastFetchedCenterRef.current;
-    if (last) {
-      const dlat = Math.abs(lat - last.lat);
-      const dlng = Math.abs(lng - last.lng);
-      if (dlat < REFETCH_THRESHOLD && dlng < REFETCH_THRESHOLD) return;
-    }
-
-    // Enforce global cooldown between requests
-    const msSinceLast = Date.now() - lastFetchTimeRef.current;
-    if (msSinceLast < FETCH_COOLDOWN_MS) return;
-
-    // Abort any previous in-flight fetch (defensive)
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-    lastFetchedCenterRef.current = { lat, lng };
-    lastFetchTimeRef.current = Date.now();
-
-    // Fixed bbox around center instead of full viewport
-    const bbox = [
-      lng - FETCH_RADIUS_DEG,
-      lat - FETCH_RADIUS_DEG,
-      lng + FETCH_RADIUS_DEG,
-      lat + FETCH_RADIUS_DEG,
-    ];
-
-    setLoading(true);
-    setErrorMsg(null);
-
-    try {
-      const data = await fetchOSMBuildings(bbox, controller.signal);
-      setGeojsonData(data);
-    } catch (err: any) {
-      if (err.name === 'AbortError') {
-        // Fetch was aborted; do nothing
-        return;
-      }
-      console.error('Failed to fetch OSM data:', err);
-      setErrorMsg(err.message || "Failed to load buildings. The server might be overloaded.");
-    } finally {
-      setLoading(false);
-      abortControllerRef.current = null;
-    }
-  };
 
   const handleMapIdle = (e: MapEvent) => {
     const currentMap = e.map;
@@ -339,25 +226,6 @@ export default function MapComponent() {
       updateUrl();
     } catch (e) {
       // noop
-    }
-
-    // Clear any pending debounce timer
-    if (debounceTimerRef.current) {
-      window.clearTimeout(debounceTimerRef.current);
-      debounceTimerRef.current = null;
-    }
-    // Abort in-flight fetches when the map moves
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-      abortControllerRef.current = null;
-    }
-
-    // Schedule auto-load when zoom is sufficient
-    if (currentZoom !== undefined && currentZoom >= 15.5 && currentBounds) {
-      debounceTimerRef.current = window.setTimeout(() => {
-        autoLoadBuildings(currentBounds);
-        debounceTimerRef.current = null;
-      }, 1500);
     }
   };
 
@@ -407,9 +275,10 @@ export default function MapComponent() {
                 d2.setHours(Math.floor(currentMinutes / 60));
                 d2.setMinutes(currentMinutes % 60);
 
-                if (geojsonData && typeof lat === 'number' && typeof lng === 'number') {
+                const tileGeojson = stateRef.current.geojsonData;
+                if (tileGeojson && typeof lat === 'number' && typeof lng === 'number') {
                   const sunP = SunCalc.getPosition(d2, lat, lng);
-                  const exposure = getSunExposureScore(lat, lng, geojsonData, sunP.altitude, sunP.azimuth);
+                  const exposure = getSunExposureScore(lat, lng, tileGeojson, sunP.altitude, sunP.azimuth);
                   computedSunScore = Math.round(exposure * 100);
                 }
               } catch (e) {
@@ -454,58 +323,60 @@ export default function MapComponent() {
     };
   }, [map]);
 
-  // 3. Memoize buildings layer (heavy geometry)
+  // 3. Memoize buildings layer (MVT tiles from MapTiler)
   const buildingsLayer = useMemo(() => {
-    if (!geojsonData) return null;
-    
-    return new GeoJsonLayer({
+    const maptilerKey = (import.meta as any).env.VITE_MAPTILER_API_KEY;
+    if (!maptilerKey) return null;
+
+    return new MVTLayer({
       id: 'buildings',
-      data: geojsonData,
+      data: `https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=${maptilerKey}`,
+      minZoom: 14,
+      maxZoom: 16,
       extruded: true,
       getElevation: (f: any) => {
-        if (f.properties.height) {
-          const h = parseFloat(f.properties.height);
-          if (!isNaN(h)) return h;
+        const p = f?.properties || {};
+        if (p.render_height) {
+          const v = parseFloat(p.render_height);
+          if (!isNaN(v)) return v;
         }
-        if (f.properties['building:levels']) {
-          const l = parseFloat(f.properties['building:levels']);
-          if (!isNaN(l)) return l * 3.5;
+        if (p.levels) {
+          const v = parseFloat(p.levels);
+          if (!isNaN(v)) return v * 3.5;
         }
-        return 12; // Default height
+        return 12;
       },
       getFillColor: (f: any) => {
         const alpha = zoom > 16.5 ? 90 : 200;
-        if (f.id === highlightedFeatureId) {
-          return [59, 130, 246, alpha + 40];
-        }
-        return [245, 245, 245, alpha];
+        return f.id === highlightedFeatureId ? [59, 130, 246, alpha + 40] : [245, 245, 245, alpha];
       },
       getLineColor: (f: any) => {
         const alpha = zoom > 16.5 ? 60 : 120;
-        if (f.id === highlightedFeatureId) {
-          return [255, 255, 255, alpha + 55];
-        }
-        return [200, 200, 200, alpha];
+        return f.id === highlightedFeatureId ? [255, 255, 255, alpha + 55] : [200, 200, 200, alpha];
       },
-      material: {
-        ambient: 0.1,
-        diffuse: 1.0,
-        shininess: 32,
-        specularColor: [255, 255, 255]
-      },
-      parameters: {
-        cull: true
-      },
+      // Only render the 'building' layer from the tile layers
+      layers: ['building'],
+      material: { ambient: 0.1, diffuse: 1.0, shininess: 32, specularColor: [255,255,255] },
       shadowEnabled: true,
       pickable: true,
       autoHighlight: true,
       highlightColor: [255, 200, 0, 100],
+      onViewportLoad: (tiles: any[]) => {
+        const features: any[] = [];
+        for (const tile of tiles) {
+          const data = (tile as any).data;
+          if (!data) continue;
+          if (data.features) features.push(...data.features);
+        }
+        tileGeojsonRef.current = { type: 'FeatureCollection', features };
+        setTileGeojsonVersion(v => v + 1);
+      },
       updateTriggers: {
         getFillColor: [highlightedFeatureId, zoom],
-        getLineColor: [highlightedFeatureId, zoom]
+        getLineColor: [highlightedFeatureId, zoom],
       }
     });
-  }, [geojsonData, highlightedFeatureId, zoom]);
+  }, [highlightedFeatureId, zoom]);
 
   // Shadow grid cache ref
   const shadowCacheRef = useRef<{
@@ -521,29 +392,16 @@ export default function MapComponent() {
 
   // 4. State Ref for imperative loop
   const stateRef = useRef({
-    date, bounds, buildingsLayer, searchedLocation, geojsonData, currentMinutes: 12 * 60,
+    date, bounds, buildingsLayer, searchedLocation, geojsonData: tileGeojsonRef.current, currentMinutes: 12 * 60,
     showBuildings: true, showFloor: true, showShadows: true,
   });
   useEffect(() => {
-    stateRef.current = { date, bounds, buildingsLayer, searchedLocation, geojsonData, currentMinutes: stateRef.current.currentMinutes ?? 12 * 60, showBuildings, showFloor, showShadows };
-  }, [date, bounds, buildingsLayer, searchedLocation, geojsonData, showBuildings, showFloor, showShadows]);
+    stateRef.current = { date, bounds, buildingsLayer, searchedLocation, geojsonData: tileGeojsonRef.current, currentMinutes: stateRef.current.currentMinutes ?? 12 * 60, showBuildings, showFloor, showShadows };
+  }, [date, bounds, buildingsLayer, searchedLocation, tileGeojsonVersion, showBuildings, showFloor, showShadows]);
 
   // Invalidate shadow cache when buildings or date change
-  useEffect(() => { shadowCacheRef.current = null; }, [geojsonData, date]);
+  useEffect(() => { shadowCacheRef.current = null; }, [tileGeojsonVersion, date]);
 
-  // Cleanup debounce timers and abort controllers on unmount
-  useEffect(() => {
-    return () => {
-      if (debounceTimerRef.current) {
-        window.clearTimeout(debounceTimerRef.current);
-        debounceTimerRef.current = null;
-      }
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-        abortControllerRef.current = null;
-      }
-    };
-  }, []);
 
   // 5. Render function (bypasses React render cycle)
   const renderDeckGL = useCallback((timeOfDay: number) => {
@@ -680,7 +538,7 @@ export default function MapComponent() {
       );
 
       // Shadow overlay — 80m radius, 12m spacing (~140 pts), cached between frames
-      if (showShadows && sunPos.altitude > 0 && geojsonData) {
+      if (showShadows && sunPos.altitude > 0 && stateRef.current.geojsonData) {
         try {
           const THRESHOLD = 0.02; // ~1° ≈ 4 min of sun movement
           const cache = shadowCacheRef.current;
@@ -700,7 +558,7 @@ export default function MapComponent() {
               lastShadowRequestRef.current = { alt: sunPos.altitude, az: sunPos.azimuth, lat, lng };
               try {
                 worker.postMessage({
-                  geojson: geojsonData,
+                  geojson: stateRef.current.geojsonData,
                   lat,
                   lng,
                   radiusKm: 0.08,
@@ -935,32 +793,6 @@ export default function MapComponent() {
         </div>
       )}
 
-      {/* Load Buildings Button */}
-      <div className="absolute top-20 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2">
-        {zoom < 15.5 ? (
-          <div className="bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-md text-sm font-medium text-gray-600 border border-gray-200">
-            Zoom in closer to load 3D buildings
-          </div>
-        ) : (
-          loading ? (
-            <div
-              className="bg-blue-600 text-white px-5 py-2.5 rounded-full shadow-lg flex items-center text-sm font-medium transition-all"
-            >
-              <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              Loading...
-            </div>
-          ) : null
-        )}
-        
-        {errorMsg && (
-          <div className="bg-red-50 text-red-600 px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium border border-red-100 flex items-center gap-3 max-w-md text-center">
-            <span>{errorMsg}</span>
-            <button onClick={() => setErrorMsg(null)} className="hover:bg-red-100 p-1 rounded-md transition-colors">
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        )}
-      </div>
 
       {/* UI Hint */}
       <div className="hidden md:block absolute top-36 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
