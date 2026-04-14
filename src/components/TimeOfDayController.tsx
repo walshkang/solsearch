@@ -1,15 +1,14 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import SunCalc from 'suncalc';
-import { SunLight, LightingEffect, AmbientLight } from '@deck.gl/core';
 
 interface TimeOfDayControllerProps {
-  deckRef: React.RefObject<any>; // Reference to GoogleMapsOverlay or Deck instance
+  onRenderFrame: (timeInHours: number) => void;
   date: Date;
   lat: number;
   lng: number;
 }
 
-export default function TimeOfDayController({ deckRef, date, lat, lng }: TimeOfDayControllerProps) {
+export default function TimeOfDayController({ onRenderFrame, date, lat, lng }: TimeOfDayControllerProps) {
   // UI State: Store time in minutes (0 to 1440) for the slider.
   // This state ONLY updates the UI label and slider position while dragging.
   const [displayMinutes, setDisplayMinutes] = useState(12 * 60); // Default to Noon
@@ -41,33 +40,6 @@ export default function TimeOfDayController({ deckRef, date, lat, lng }: TimeOfD
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
   };
 
-  // Imperative function to push lighting updates directly to Deck.gl
-  const renderDeckGL = useCallback((minutes: number) => {
-    if (!deckRef.current) return;
-
-    const d = new Date(date);
-    d.setHours(Math.floor(minutes / 60));
-    d.setMinutes(minutes % 60);
-    const timestamp = d.getTime();
-
-    const ambientLight = new AmbientLight({
-      color: [255, 255, 255],
-      intensity: 0.5
-    });
-
-    const sunLight = new SunLight({
-      timestamp,
-      color: [255, 255, 255],
-      intensity: 4.5,
-      _shadow: true
-    });
-
-    const lightingEffect = new LightingEffect({ ambientLight, sunLight });
-
-    // Push directly to Deck.gl without triggering a React re-render
-    deckRef.current.setProps({ effects: [lightingEffect] });
-  }, [date, deckRef]);
-
   // The requestAnimationFrame lerp loop
   const startAnimation = useCallback(() => {
     if (frameRef.current !== null) return; // Prevent multiple loops
@@ -80,21 +52,21 @@ export default function TimeOfDayController({ deckRef, date, lat, lng }: TimeOfD
         // 1. Calculate next lerp step (10% closer to target each frame)
         currentMinutesRef.current += diff * 0.1;
         
-        // 2. Push to Deck.gl
-        renderDeckGL(currentMinutesRef.current);
+        // 2. Emit interpolated hour value to parent renderer
+        onRenderFrame(currentMinutesRef.current / 60);
         
         // 3. Keep animating
         frameRef.current = requestAnimationFrame(loop);
       } else {
         // Target reached! Snap to exact target and stop the loop to save CPU/GPU.
         currentMinutesRef.current = targetMinutesRef.current;
-        renderDeckGL(currentMinutesRef.current);
+        onRenderFrame(currentMinutesRef.current / 60);
         frameRef.current = null;
       }
     };
 
     frameRef.current = requestAnimationFrame(loop);
-  }, [renderDeckGL]);
+  }, [onRenderFrame]);
 
   // Cleanup the animation frame on component unmount
   useEffect(() => {
