@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { Map, useMap, useMapsLibrary, MapEvent } from '@vis.gl/react-google-maps';
 import { GoogleMapsOverlay } from '@deck.gl/google-maps';
 import { GeoJsonLayer, PolygonLayer, ScatterplotLayer } from '@deck.gl/layers';
@@ -9,25 +9,6 @@ import * as turf from '@turf/turf';
 import { format } from 'date-fns';
 import { Search, Loader2, MapPin, Building, Sparkles, X, Sun } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
-
-// --- DeckGL Overlay Component ---
-function DeckGLOverlay({ layers, effects }: { layers: any[]; effects: any[] }) {
-  const map = useMap();
-  const overlay = useMemo(() => new GoogleMapsOverlay({ interleaved: false }), []);
-
-  useEffect(() => {
-    if (map) {
-      overlay.setMap(map);
-    }
-    return () => overlay.setMap(null);
-  }, [map, overlay]);
-
-  useEffect(() => {
-    overlay.setProps({ layers, effects });
-  }, [layers, effects, overlay]);
-
-  return null;
-}
 
 // --- Places Autocomplete Component ---
 function Autocomplete({ onPlaceSelect }: { onPlaceSelect: (location: google.maps.LatLng) => void }) {
@@ -70,12 +51,16 @@ function Autocomplete({ onPlaceSelect }: { onPlaceSelect: (location: google.maps
 export default function MapComponent() {
   const map = useMap();
   const [date, setDate] = useState<Date>(new Date());
-  const [timeOfDay, setTimeOfDay] = useState<number>(14); // Default to 2:00 PM
+  
+  // Slider state (UI only)
+  const [sliderTime, setSliderTime] = useState<number>(14);
+
   const [geojsonData, setGeojsonData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [bounds, setBounds] = useState<google.maps.LatLngBounds | null>(null);
   const [zoom, setZoom] = useState(16);
   const [showLoadButton, setShowLoadButton] = useState(true);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchedLocation, setSearchedLocation] = useState<{lat: number, lng: number} | null>(null);
   const [highlightedFeatureId, setHighlightedFeatureId] = useState<string | null>(null);
 
@@ -87,60 +72,10 @@ export default function MapComponent() {
 
   const currentTimestamp = useMemo(() => {
     const d = new Date(date);
-    d.setHours(Math.floor(timeOfDay));
-    d.setMinutes((timeOfDay % 1) * 60);
+    d.setHours(Math.floor(sliderTime));
+    d.setMinutes((sliderTime % 1) * 60);
     return d.getTime();
-  }, [date, timeOfDay]);
-
-  // Dynamic color calculation based on sun position
-  const sunColor = useMemo(() => {
-    if (!bounds) return [255, 255, 255]; // Default white
-    const center = bounds.getCenter();
-    const lat = center.lat();
-    const lng = center.lng();
-    
-    const times = SunCalc.getTimes(date, lat, lng);
-    const toHours = (d: Date) => d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
-    
-    // Fallbacks in case sun doesn't set/rise (extreme latitudes)
-    const dawn = times.dawn ? toHours(times.dawn) : 5;
-    const sunrise = times.sunrise ? toHours(times.sunrise) : 6;
-    const goldenHourEnd = times.goldenHourEnd ? toHours(times.goldenHourEnd) : 8;
-    const solarNoon = times.solarNoon ? toHours(times.solarNoon) : 12;
-    const goldenHour = times.goldenHour ? toHours(times.goldenHour) : 16;
-    const sunset = times.sunset ? toHours(times.sunset) : 18;
-    const dusk = times.dusk ? toHours(times.dusk) : 19;
-
-    const keyframes = [
-      { time: 0, color: [30, 30, 50] },
-      { time: dawn - 1, color: [30, 30, 50] },
-      { time: dawn, color: [80, 70, 100] },
-      { time: sunrise, color: [255, 160, 100] }, // Brighter orange
-      { time: goldenHourEnd, color: [255, 240, 210] },
-      { time: solarNoon, color: [255, 255, 255] },
-      { time: goldenHour, color: [255, 240, 210] },
-      { time: sunset, color: [255, 160, 100] }, // Brighter orange
-      { time: dusk, color: [80, 70, 100] },
-      { time: dusk + 1, color: [30, 30, 50] },
-      { time: 24, color: [30, 30, 50] }
-    ].sort((a, b) => a.time - b.time);
-
-    let k1 = keyframes[0];
-    let k2 = keyframes[keyframes.length - 1];
-    for (let i = 0; i < keyframes.length - 1; i++) {
-      if (timeOfDay >= keyframes[i].time && timeOfDay <= keyframes[i + 1].time) {
-        k1 = keyframes[i];
-        k2 = keyframes[i + 1];
-        break;
-      }
-    }
-    const t = (timeOfDay - k1.time) / (k2.time - k1.time || 1);
-    return [
-      Math.round(k1.color[0] + (k2.color[0] - k1.color[0]) * t),
-      Math.round(k1.color[1] + (k2.color[1] - k1.color[1]) * t),
-      Math.round(k1.color[2] + (k2.color[2] - k1.color[2]) * t)
-    ];
-  }, [date, timeOfDay, bounds]);
+  }, [date, sliderTime]);
 
   const handlePlaceSelect = (location: google.maps.LatLng) => {
     if (map) {
@@ -171,7 +106,7 @@ export default function MapComponent() {
 
   const fetchOSMBuildings = async (bbox: number[]) => {
     const query = `
-      [out:json][timeout:25];
+      [out:json][timeout:60];
       (
         way["building"](${bbox[1]},${bbox[0]},${bbox[3]},${bbox[2]});
         relation["building"](${bbox[1]},${bbox[0]},${bbox[3]},${bbox[2]});
@@ -184,7 +119,9 @@ export default function MapComponent() {
     const endpoints = [
       'https://overpass-api.de/api/interpreter',
       'https://lz4.overpass-api.de/api/interpreter',
-      'https://overpass.kumi.systems/api/interpreter'
+      'https://z.overpass-api.de/api/interpreter',
+      'https://overpass.kumi.systems/api/interpreter',
+      'https://overpass.openstreetmap.ru/api/interpreter'
     ];
 
     let lastError = null;
@@ -228,7 +165,6 @@ export default function MapComponent() {
     const ne = bounds.getNorthEast();
     const sw = bounds.getSouthWest();
     
-    // No padding, just the exact view to keep query small and fast
     const bbox = [
       sw.lng(),
       sw.lat(),
@@ -238,13 +174,15 @@ export default function MapComponent() {
 
     setLoading(true);
     setShowLoadButton(false);
+    setErrorMsg(null);
     
     try {
       const data = await fetchOSMBuildings(bbox);
       setGeojsonData(data);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch OSM data:', err);
-      setShowLoadButton(true); // Show again so they can retry
+      setShowLoadButton(true);
+      setErrorMsg(err.message || "Failed to load buildings. The server might be overloaded.");
     } finally {
       setLoading(false);
     }
@@ -256,7 +194,6 @@ export default function MapComponent() {
     setDiscoverResults([]);
     
     try {
-      // 1. Find places using Google Places API
       const placesService = new google.maps.places.PlacesService(map);
       const request = {
         query: discoverQuery,
@@ -265,11 +202,6 @@ export default function MapComponent() {
 
       placesService.textSearch(request, async (results, status) => {
         if (status === google.maps.places.PlacesServiceStatus.OK && results) {
-          // Groundwork: We have the places. 
-          // Next step would be to calculate sun exposure for each place's location
-          // using the 3D building data and sun position.
-          // For now, we use Gemini to analyze the places and mock a sun score.
-          
           try {
             const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
             const placesList = results.slice(0, 6).map(p => p.name).join(', ');
@@ -288,7 +220,6 @@ export default function MapComponent() {
             
             const aiData = JSON.parse(response.text || '[]');
             
-            // Merge AI data with Places data
             const ranked = results.slice(0, 6).map(p => {
               const aiInfo = aiData.find((a: any) => a.name.includes(p.name) || p.name.includes(a.name)) || { reason: 'Looks like a great spot!', sunScore: Math.floor(Math.random() * 40) + 40 };
               return {
@@ -301,7 +232,6 @@ export default function MapComponent() {
             setDiscoverResults(ranked);
           } catch (e) {
             console.error("Gemini error", e);
-            // Fallback if Gemini fails
             setDiscoverResults(results.slice(0, 6).map(p => ({...p, sunScore: Math.floor(Math.random() * 100), aiReason: 'Great place!'})));
           }
         }
@@ -314,37 +244,171 @@ export default function MapComponent() {
     }
   };
 
-  // --- Deck.gl Layers & Lighting ---
-  const lightingEffect = useMemo(() => {
+  // 1. Create Overlay Ref
+  const overlayRef = useRef<GoogleMapsOverlay | null>(null);
+  if (!overlayRef.current) {
+    overlayRef.current = new GoogleMapsOverlay({ interleaved: false });
+  }
+
+  // 2. Attach overlay to map
+  useEffect(() => {
+    if (map && overlayRef.current) {
+      overlayRef.current.setMap(map);
+    }
+    return () => {
+      if (overlayRef.current) overlayRef.current.setMap(null);
+    };
+  }, [map]);
+
+  // 3. Memoize buildings layer (heavy geometry)
+  const buildingsLayer = useMemo(() => {
+    if (!geojsonData) return null;
+    
+    return new GeoJsonLayer({
+      id: 'buildings',
+      data: geojsonData,
+      extruded: true,
+      getElevation: (f: any) => {
+        if (f.properties.height) {
+          const h = parseFloat(f.properties.height);
+          if (!isNaN(h)) return h;
+        }
+        if (f.properties['building:levels']) {
+          const l = parseFloat(f.properties['building:levels']);
+          if (!isNaN(l)) return l * 3.5;
+        }
+        return 12; // Default height
+      },
+      getFillColor: (f: any) => {
+        const alpha = zoom > 16.5 ? 90 : 200;
+        if (f.id === highlightedFeatureId) {
+          return [59, 130, 246, alpha + 40];
+        }
+        return [245, 245, 245, alpha];
+      },
+      getLineColor: (f: any) => {
+        const alpha = zoom > 16.5 ? 60 : 120;
+        if (f.id === highlightedFeatureId) {
+          return [255, 255, 255, alpha + 55];
+        }
+        return [200, 200, 200, alpha];
+      },
+      material: {
+        ambient: 0.1,
+        diffuse: 1.0,
+        shininess: 32,
+        specularColor: [255, 255, 255]
+      },
+      parameters: {
+        cull: true
+      },
+      shadowEnabled: true,
+      pickable: true,
+      autoHighlight: true,
+      highlightColor: [255, 200, 0, 100],
+      updateTriggers: {
+        getFillColor: [highlightedFeatureId, zoom],
+        getLineColor: [highlightedFeatureId, zoom]
+      }
+    });
+  }, [geojsonData, highlightedFeatureId, zoom]);
+
+  // 4. State Ref for imperative loop
+  const stateRef = useRef({
+    date, bounds, buildingsLayer, searchedLocation
+  });
+  useEffect(() => {
+    stateRef.current = { date, bounds, buildingsLayer, searchedLocation };
+  }, [date, bounds, buildingsLayer, searchedLocation]);
+
+  // 5. Render function (bypasses React render cycle)
+  const renderDeckGL = useCallback((timeOfDay: number) => {
+    const overlay = overlayRef.current;
+    if (!overlay) return;
+
+    const { date, bounds, buildingsLayer, searchedLocation } = stateRef.current;
+
+    const d = new Date(date);
+    d.setHours(Math.floor(timeOfDay));
+    d.setMinutes((timeOfDay % 1) * 60);
+    const renderTimestamp = d.getTime();
+
+    let sunColor = [255, 255, 255];
+    if (bounds) {
+      const center = bounds.getCenter();
+      const lat = center.lat();
+      const lng = center.lng();
+      
+      const times = SunCalc.getTimes(date, lat, lng);
+      const toHours = (d: Date) => d.getHours() + d.getMinutes() / 60 + d.getSeconds() / 3600;
+      
+      const dawn = times.dawn ? toHours(times.dawn) : 5;
+      const sunrise = times.sunrise ? toHours(times.sunrise) : 6;
+      const goldenHourEnd = times.goldenHourEnd ? toHours(times.goldenHourEnd) : 8;
+      const solarNoon = times.solarNoon ? toHours(times.solarNoon) : 12;
+      const goldenHour = times.goldenHour ? toHours(times.goldenHour) : 16;
+      const sunset = times.sunset ? toHours(times.sunset) : 18;
+      const dusk = times.dusk ? toHours(times.dusk) : 19;
+
+      const keyframes = [
+        { time: 0, color: [30, 30, 50] },
+        { time: dawn - 1, color: [30, 30, 50] },
+        { time: dawn, color: [80, 70, 100] },
+        { time: sunrise, color: [255, 160, 100] },
+        { time: goldenHourEnd, color: [255, 240, 210] },
+        { time: solarNoon, color: [255, 255, 255] },
+        { time: goldenHour, color: [255, 240, 210] },
+        { time: sunset, color: [255, 160, 100] },
+        { time: dusk, color: [80, 70, 100] },
+        { time: dusk + 1, color: [30, 30, 50] },
+        { time: 24, color: [30, 30, 50] }
+      ].sort((a, b) => a.time - b.time);
+
+      let k1 = keyframes[0];
+      let k2 = keyframes[keyframes.length - 1];
+      for (let i = 0; i < keyframes.length - 1; i++) {
+        if (timeOfDay >= keyframes[i].time && timeOfDay <= keyframes[i + 1].time) {
+          k1 = keyframes[i];
+          k2 = keyframes[i + 1];
+          break;
+        }
+      }
+      const t = (timeOfDay - k1.time) / (k2.time - k1.time || 1);
+      sunColor = [
+        Math.round(k1.color[0] + (k2.color[0] - k1.color[0]) * t),
+        Math.round(k1.color[1] + (k2.color[1] - k1.color[1]) * t),
+        Math.round(k1.color[2] + (k2.color[2] - k1.color[2]) * t)
+      ];
+    }
+
     const ambientLight = new AmbientLight({
+      id: 'ambient',
       color: sunColor,
-      intensity: 1.2
+      intensity: 0.5
     });
 
     const sunLight = new SunLight({
-      timestamp: currentTimestamp,
+      id: 'sunlight',
+      timestamp: renderTimestamp,
       color: sunColor,
-      intensity: 3.5,
+      intensity: 4.5,
       _shadow: true
     });
 
-    return new LightingEffect({ ambientLight, sunLight });
-  }, [currentTimestamp, sunColor]);
+    const lightingEffect = new LightingEffect({ ambientLight, sunLight });
 
-  const layers = useMemo(() => {
     const baseLayers = [];
 
     if (bounds) {
       const center = bounds.getCenter();
       const lat = center.lat();
       const lng = center.lng();
-      const sunPos = SunCalc.getPosition(new Date(currentTimestamp), lat, lng);
+      const sunPos = SunCalc.getPosition(new Date(renderTimestamp), lat, lng);
       
-      // Calculate how dark it should be (0 = day, 1 = night)
       const darkness = Math.max(0, Math.min(1, -sunPos.altitude / 0.1));
-      const tintAlpha = Math.floor(darkness * 180); // Max darkness alpha
+      const tintAlpha = Math.floor(darkness * 180);
 
-      const d = 0.1; // ~10km radius
+      const d = 0.1;
       const groundPolygon = [
         [lng - d, lat - d],
         [lng + d, lat - d],
@@ -352,92 +416,53 @@ export default function MapComponent() {
         [lng - d, lat + d]
       ];
 
-      // Dynamic Ground Plane: Tints the street level based on sun color and catches shadows
-      if (geojsonData) {
-        let groundAlpha = 60; // Base alpha to catch shadows during the day
-        if (sunPos.altitude < 0) {
-          // Increase alpha at night to darken the map
-          const darkness = Math.min(1, -sunPos.altitude / 0.2);
-          groundAlpha = 60 + Math.floor(darkness * 140); // Up to 200
-        } else if (sunPos.altitude < 0.2) {
-          // Slightly increase alpha during sunset for a stronger golden hour tint
-          const sunsetness = (0.2 - sunPos.altitude) / 0.2;
-          groundAlpha = 60 + Math.floor(sunsetness * 40); // Up to 100
-        }
-
+      if (tintAlpha > 0) {
         baseLayers.push(
           new PolygonLayer({
-            id: 'ground-plane',
+            id: 'night-tint',
             data: [{ polygon: groundPolygon }],
             getPolygon: (d: any) => d.polygon,
-            getFillColor: [...sunColor, groundAlpha] as [number, number, number, number],
-            shadowEnabled: false,
+            getFillColor: [10, 15, 30, tintAlpha],
             pickable: false,
-            updateTriggers: {
-              getFillColor: [sunColor, groundAlpha]
-            }
+            shadowEnabled: false
           })
         );
       }
-    }
 
-    if (geojsonData) {
+      let groundAlpha = 60;
+      if (sunPos.altitude > 0 && sunPos.altitude < 0.2) {
+        const sunsetness = (0.2 - sunPos.altitude) / 0.2;
+        groundAlpha = 60 + Math.floor(sunsetness * 40);
+      }
+
       baseLayers.push(
-        new GeoJsonLayer({
-          id: 'buildings',
-          data: geojsonData,
-          extruded: true,
-          getElevation: (f: any) => {
-            if (f.properties.height) {
-              const h = parseFloat(f.properties.height);
-              if (!isNaN(h)) return h;
-            }
-            if (f.properties['building:levels']) {
-              const l = parseFloat(f.properties['building:levels']);
-              if (!isNaN(l)) return l * 3.5;
-            }
-            return 12; // Default height
-          },
-          getFillColor: (f: any) => {
-            // Make buildings transparent when zoomed in close to see sun coverage inside blocks
-            const alpha = zoom > 17.5 ? 120 : 255;
-            if (f.id === highlightedFeatureId) {
-              return [59, 130, 246, alpha]; // Bright blue for highlighted building
-            }
-            return [245, 245, 245, alpha];
-          },
-          getLineColor: (f: any) => {
-            const alpha = zoom > 17.5 ? 120 : 255;
-            if (f.id === highlightedFeatureId) {
-              return [255, 255, 255, alpha];
-            }
-            return [200, 200, 200, alpha];
-          },
+        new PolygonLayer({
+          id: 'ground-plane',
+          data: [{ polygon: groundPolygon }],
+          getPolygon: (d: any) => d.polygon,
+          getFillColor: [...sunColor, groundAlpha] as [number, number, number, number],
           material: {
-            ambient: 0.2,
-            diffuse: 0.8,
-            shininess: 32,
-            specularColor: [255, 255, 255]
+            ambient: 2.0,
+            diffuse: 0.2,
+            shininess: 0,
+            specularColor: [0, 0, 0]
           },
           shadowEnabled: true,
-          pickable: true,
-          autoHighlight: true,
-          highlightColor: [255, 200, 0, 100],
-          updateTriggers: {
-            getFillColor: [highlightedFeatureId, zoom],
-            getLineColor: [highlightedFeatureId, zoom]
-          }
+          pickable: false
         })
       );
     }
 
+    if (buildingsLayer) {
+      baseLayers.push(buildingsLayer);
+    }
+
     if (searchedLocation) {
-      // Add a glowing marker above the searched location
       baseLayers.push(
         new ScatterplotLayer({
           id: 'highlight-marker',
           data: [searchedLocation],
-          getPosition: (d: any) => [d.lng, d.lat, 50], // Hover 50m above ground
+          getPosition: (d: any) => [d.lng, d.lat, 50],
           getFillColor: [59, 130, 246, 200],
           getRadius: 10,
           radiusMinPixels: 6,
@@ -450,8 +475,52 @@ export default function MapComponent() {
       );
     }
 
-    return baseLayers;
-  }, [geojsonData, bounds, currentTimestamp, sunColor, highlightedFeatureId, searchedLocation, zoom]);
+    overlay.setProps({ layers: baseLayers, effects: [lightingEffect] });
+  }, []);
+
+  // 6. Animation Loop for smooth shadow transitions
+  const renderTimeRef = useRef(14);
+  const targetTimeRef = useRef(14);
+  const frameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    targetTimeRef.current = sliderTime;
+  }, [sliderTime]);
+
+  useEffect(() => {
+    const loop = () => {
+      const diff = targetTimeRef.current - renderTimeRef.current;
+      if (Math.abs(diff) > 0.001) {
+        renderTimeRef.current += diff * 0.25; // Lerp factor (smoothly glide to target)
+        renderDeckGL(renderTimeRef.current);
+        frameRef.current = requestAnimationFrame(loop);
+      } else {
+        // Epsilon check: Target reached! Snap to exact target and stop the loop to save CPU/GPU.
+        if (renderTimeRef.current !== targetTimeRef.current) {
+          renderTimeRef.current = targetTimeRef.current;
+          renderDeckGL(renderTimeRef.current);
+        }
+        frameRef.current = null;
+      }
+    };
+
+    // Only start a new loop if one isn't already running
+    if (frameRef.current === null) {
+      frameRef.current = requestAnimationFrame(loop);
+    }
+
+    return () => {
+      if (frameRef.current !== null) {
+        cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+    };
+  }, [sliderTime, renderDeckGL]);
+
+  // 7. Force render when dependencies change (not just time)
+  useEffect(() => {
+    renderDeckGL(renderTimeRef.current);
+  }, [date, bounds, buildingsLayer, searchedLocation, renderDeckGL]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gray-100">
@@ -538,7 +607,7 @@ export default function MapComponent() {
 
       {/* Load Buildings Button */}
       <div className="absolute top-20 left-1/2 -translate-x-1/2 z-10 flex flex-col items-center gap-2">
-        {zoom < 15 ? (
+        {zoom < 15.5 ? (
           <div className="bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-md text-sm font-medium text-gray-600 border border-gray-200">
             Zoom in closer to load 3D buildings
           </div>
@@ -556,12 +625,21 @@ export default function MapComponent() {
             {loading ? 'Loading...' : 'Load Buildings in View'}
           </button>
         ) : null}
+        
+        {errorMsg && (
+          <div className="bg-red-50 text-red-600 px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium border border-red-100 flex items-center gap-3 max-w-md text-center">
+            <span>{errorMsg}</span>
+            <button onClick={() => setErrorMsg(null)} className="hover:bg-red-100 p-1 rounded-md transition-colors">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </div>
 
       {/* UI Hint */}
       <div className="absolute top-36 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
         <div className="bg-black/50 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-white/90 shadow-lg">
-          Hold <kbd className="bg-white/20 px-1.5 py-0.5 rounded mx-1">Shift</kbd> + Drag to rotate 3D view
+          Hold <kbd className="bg-white/20 px-1.5 py-0.5 rounded mx-1">Shift</kbd> + Drag (or use 2-finger twist) to rotate 3D view
         </div>
       </div>
 
@@ -572,13 +650,18 @@ export default function MapComponent() {
         defaultZoom={16}
         defaultTilt={45}
         defaultHeading={0}
-        disableDefaultUI={true}
+        mapTypeControl={false}
+        streetViewControl={false}
+        fullscreenControl={false}
+        zoomControl={true}
+        gestureHandling="greedy"
+        tiltInteractionEnabled={true}
+        headingInteractionEnabled={true}
         onIdle={handleMapIdle}
         renderingType="VECTOR"
       />
 
-      {/* Deck.gl Overlay */}
-      <DeckGLOverlay layers={layers} effects={[lightingEffect]} />
+      {/* Deck.gl Overlay is now managed imperatively via overlayRef */}
 
       {/* Control Panel */}
       <div className="absolute bottom-6 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[500px] z-10">
@@ -611,8 +694,11 @@ export default function MapComponent() {
                   min="0"
                   max="24"
                   step="0.25"
-                  value={timeOfDay}
-                  onChange={(e) => setTimeOfDay(parseFloat(e.target.value))}
+                  value={sliderTime}
+                  onChange={(e) => {
+                    const val = parseFloat(e.target.value);
+                    setSliderTime(val);
+                  }}
                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 />
                 <div className="flex justify-between text-[10px] text-gray-400 mt-2 font-medium">
