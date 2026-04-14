@@ -9,6 +9,7 @@ import * as turf from '@turf/turf';
 import { format } from 'date-fns';
 import { Search, Loader2, MapPin, Building, Sparkles, X, Sun } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
+import TimeOfDayController from './components/TimeOfDayController';
 
 // --- Places Autocomplete Component ---
 function Autocomplete({ onPlaceSelect }: { onPlaceSelect: (location: google.maps.LatLng) => void }) {
@@ -66,13 +67,6 @@ export default function MapComponent() {
   const [discoverQuery, setDiscoverQuery] = useState('Bars with happy hour');
   const [discoverResults, setDiscoverResults] = useState<any[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
-
-  const currentTimestamp = useMemo(() => {
-    const d = new Date(date);
-    d.setHours(14);
-    d.setMinutes(0);
-    return d.getTime();
-  }, [date]);
 
   const handlePlaceSelect = (location: google.maps.LatLng) => {
     if (map) {
@@ -475,11 +469,6 @@ export default function MapComponent() {
     overlay.setProps({ layers: baseLayers, effects: [lightingEffect] });
   }, []);
 
-  // 6. Temporary fallback render until external time controller is wired
-  useEffect(() => {
-    renderDeckGL(14.0);
-  }, [renderDeckGL]);
-
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gray-100">
       {/* Search Bar & Discover Toggle */}
@@ -631,7 +620,7 @@ export default function MapComponent() {
                 Sunlight Simulator
               </h3>
               <div className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
-                {format(currentTimestamp, 'MMM d, yyyy - h:mm a')}
+                {format(date, 'MMM d, yyyy')}
               </div>
             </div>
 
@@ -645,24 +634,13 @@ export default function MapComponent() {
                   className="w-full text-sm border-gray-200 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 py-2 px-3 bg-gray-50"
                 />
               </div>
-              <div className="flex-[2]">
-                <label className="text-xs font-medium text-gray-500 mb-2 block uppercase tracking-wider">Time of Day</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="24"
-                  step="0.25"
-                  value={14}
-                  readOnly
-                  className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
+              <div className="flex-1">
+                <TimeOfDayController
+                  date={date}
+                  lat={bounds ? bounds.getCenter().lat() : 40.7128}
+                  lng={bounds ? bounds.getCenter().lng() : -74.0060}
+                  onRenderFrame={renderDeckGL}
                 />
-                <div className="flex justify-between text-[10px] text-gray-400 mt-2 font-medium">
-                  <span>Midnight</span>
-                  <span>6 AM</span>
-                  <span>Noon</span>
-                  <span>6 PM</span>
-                  <span>Midnight</span>
-                </div>
               </div>
             </div>
           </div>
