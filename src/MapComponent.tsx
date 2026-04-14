@@ -7,9 +7,11 @@ import osmtogeojson from 'osmtogeojson';
 import SunCalc from 'suncalc';
 import * as turf from '@turf/turf';
 import { format } from 'date-fns';
-import { Search, Loader2, MapPin, Building, Sparkles, X, Sun } from 'lucide-react';
+import { Search, Loader2, MapPin, Sparkles, X, Sun, Layers, Link } from 'lucide-react';
 import { GoogleGenAI } from '@google/genai';
 import TimeOfDayController from './components/TimeOfDayController';
+import SunTimeline from './components/SunTimeline';
+import { computeShadowGrid, getSunExposureScore } from './utils/shadowCompute';
 
 // --- URL state helpers ---
 function parseUrlState() {
@@ -158,12 +160,27 @@ export default function MapComponent() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchedLocation, setSearchedLocation] = useState<{lat: number, lng: number} | null>(null);
   const [highlightedFeatureId, setHighlightedFeatureId] = useState<string | null>(null);
+  const [timelineLocation, setTimelineLocation] = useState<{lat:number,lng:number} | null>(null);
+  const [currentTimeMinutes, setCurrentTimeMinutes] = useState<number>(typeof initialMinutes === 'number' ? initialMinutes : 12 * 60);
+
+  useEffect(() => {
+    if (typeof initialMinutes === 'number') setCurrentTimeMinutes(initialMinutes);
+  }, [initialMinutes]);
+
+  // Layer toggles
+  const [showBuildings, setShowBuildings] = useState(true);
+  const [showFloor, setShowFloor] = useState(true);
+  const [showShadows, setShowShadows] = useState(true);
+  const [isLayersOpen, setIsLayersOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   // Discover Panel State
   const [isDiscoverOpen, setIsDiscoverOpen] = useState(false);
   const [discoverQuery, setDiscoverQuery] = useState('Bars with happy hour');
   const [discoverResults, setDiscoverResults] = useState<any[]>([]);
   const [isDiscovering, setIsDiscovering] = useState(false);
+  // Mobile control panel open state (controlled via React instead of peer checkbox)
+  const [isPanelOpen, setIsPanelOpen] = useState(false);
 
   const handlePlaceSelect = (location: google.maps.LatLng) => {
     if (map) {
@@ -203,7 +220,7 @@ export default function MapComponent() {
       >;
       out skel qt;
     `;
-    
+
     const endpoints = [
       'https://overpass-api.de/api/interpreter',
       'https://lz4.overpass-api.de/api/interpreter',
@@ -214,24 +231,25 @@ export default function MapComponent() {
 
     let lastError = null;
     for (const url of endpoints) {
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
       try {
         const response = await fetch(url, {
           method: 'POST',
           body: `data=${encodeURIComponent(query)}`,
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
-          },
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           signal
         });
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
+        // On rate-limit, stop trying other endpoints and surface the error
+        if (response.status === 429) {
+          throw new Error('Rate limited by Overpass API. Please wait a moment before moving the map.');
         }
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const data = await response.json();
         return osmtogeojson(data);
       } catch (err: any) {
-        if (err.name === 'AbortError') {
-          throw err;
-        }
+        if (err.name === 'AbortError') throw err;
+        // Don't cascade to next endpoint on rate limit
+        if (err.message?.includes('Rate limited')) throw err;
         console.warn(`Failed to fetch from ${url}:`, err);
         lastError = err;
       }
@@ -239,13 +257,36 @@ export default function MapComponent() {
     throw lastError || new Error('All Overpass API endpoints failed');
   };
 
-  // Refs for debounce and cancellation of building fetches
+  // Refs for debounce, cancellation, last-fetched center, and global fetch cooldown
   const debounceTimerRef = useRef<number | null>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const lastFetchedCenterRef = useRef<{lat: number, lng: number} | null>(null);
+  const lastFetchTimeRef = useRef<number>(0);
+  const FETCH_COOLDOWN_MS = 10_000; // minimum 10s between Overpass requests
+
+  // Fixed fetch radius in degrees (~400m)
+  const FETCH_RADIUS_DEG = 0.004;
+  // Re-fetch threshold: skip if center moved less than 30% of the radius
+  const REFETCH_THRESHOLD = FETCH_RADIUS_DEG * 0.3;
 
   // Auto-load buildings with cancellation support
-  const autoLoadBuildings = async () => {
-    if (!bounds) return;
+  const autoLoadBuildings = async (boundsToUse: google.maps.LatLngBounds) => {
+    const center = boundsToUse.getCenter();
+    const lat = center.lat();
+    const lng = center.lng();
+
+    // Skip if we haven't moved far enough from the last fetch
+    const last = lastFetchedCenterRef.current;
+    if (last) {
+      const dlat = Math.abs(lat - last.lat);
+      const dlng = Math.abs(lng - last.lng);
+      if (dlat < REFETCH_THRESHOLD && dlng < REFETCH_THRESHOLD) return;
+    }
+
+    // Enforce global cooldown between requests
+    const msSinceLast = Date.now() - lastFetchTimeRef.current;
+    if (msSinceLast < FETCH_COOLDOWN_MS) return;
+
     // Abort any previous in-flight fetch (defensive)
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -253,15 +294,15 @@ export default function MapComponent() {
     }
     const controller = new AbortController();
     abortControllerRef.current = controller;
+    lastFetchedCenterRef.current = { lat, lng };
+    lastFetchTimeRef.current = Date.now();
 
-    const ne = bounds.getNorthEast();
-    const sw = bounds.getSouthWest();
-
+    // Fixed bbox around center instead of full viewport
     const bbox = [
-      sw.lng(),
-      sw.lat(),
-      ne.lng(),
-      ne.lat()
+      lng - FETCH_RADIUS_DEG,
+      lat - FETCH_RADIUS_DEG,
+      lng + FETCH_RADIUS_DEG,
+      lat + FETCH_RADIUS_DEG,
     ];
 
     setLoading(true);
@@ -312,38 +353,11 @@ export default function MapComponent() {
     }
 
     // Schedule auto-load when zoom is sufficient
-    if (currentZoom !== undefined && currentZoom >= 15.5) {
+    if (currentZoom !== undefined && currentZoom >= 15.5 && currentBounds) {
       debounceTimerRef.current = window.setTimeout(() => {
-        autoLoadBuildings();
+        autoLoadBuildings(currentBounds);
         debounceTimerRef.current = null;
-      }, 500);
-    }
-  };
-
-  const handleLoadBuildings = async () => {
-    if (!bounds) return;
-    
-    const ne = bounds.getNorthEast();
-    const sw = bounds.getSouthWest();
-    
-    const bbox = [
-      sw.lng(),
-      sw.lat(),
-      ne.lng(),
-      ne.lat()
-    ];
-
-    setLoading(true);
-    setErrorMsg(null);
-    
-    try {
-      const data = await fetchOSMBuildings(bbox);
-      setGeojsonData(data);
-    } catch (err: any) {
-      console.error('Failed to fetch OSM data:', err);
-      setErrorMsg(err.message || "Failed to load buildings. The server might be overloaded.");
-    } finally {
-      setLoading(false);
+      }, 1500);
     }
   };
 
@@ -362,7 +376,7 @@ export default function MapComponent() {
       placesService.textSearch(request, async (results, status) => {
         if (status === google.maps.places.PlacesServiceStatus.OK && results) {
           try {
-            const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+            const ai = new GoogleGenAI({ apiKey: (import.meta as any).env.VITE_GEMINI_API_KEY });
             const placesList = results.slice(0, 6).map(p => p.name).join(', ');
             
             const prompt = `I am looking for "${discoverQuery}". Here are some places I found in this area: ${placesList}. 
@@ -381,10 +395,31 @@ export default function MapComponent() {
             
             const ranked = results.slice(0, 6).map(p => {
               const aiInfo = aiData.find((a: any) => a.name.includes(p.name) || p.name.includes(a.name)) || { reason: 'Looks like a great spot!', sunScore: Math.floor(Math.random() * 40) + 40 };
+
+              let computedSunScore = aiInfo.sunScore;
+              try {
+                const loc = p.geometry?.location;
+                const lat = typeof loc?.lat === 'function' ? loc.lat() : loc?.lat;
+                const lng = typeof loc?.lng === 'function' ? loc.lng() : loc?.lng;
+
+                const currentMinutes = stateRef.current.currentMinutes ?? (12 * 60);
+                const d2 = new Date(stateRef.current.date);
+                d2.setHours(Math.floor(currentMinutes / 60));
+                d2.setMinutes(currentMinutes % 60);
+
+                if (geojsonData && typeof lat === 'number' && typeof lng === 'number') {
+                  const sunP = SunCalc.getPosition(d2, lat, lng);
+                  const exposure = getSunExposureScore(lat, lng, geojsonData, sunP.altitude, sunP.azimuth);
+                  computedSunScore = Math.round(exposure * 100);
+                }
+              } catch (e) {
+                // fallback to ai-provided score
+              }
+
               return {
                 ...p,
                 aiReason: aiInfo.reason,
-                sunScore: aiInfo.sunScore
+                sunScore: computedSunScore
               };
             }).sort((a, b) => b.sunScore - a.sunScore);
 
@@ -472,13 +507,29 @@ export default function MapComponent() {
     });
   }, [geojsonData, highlightedFeatureId, zoom]);
 
+  // Shadow grid cache ref
+  const shadowCacheRef = useRef<{
+    alt: number; az: number; lat: number; lng: number;
+    pts: ReturnType<typeof computeShadowGrid>;
+  } | null>(null);
+
+  // Worker & request state
+  const shadowWorkerRef = useRef<Worker | null>(null);
+  const shadowPendingRef = useRef(false);
+  const lastShadowRequestRef = useRef<{ alt: number; az: number; lat: number; lng: number; } | null>(null);
+  const lastTimeOfDayRef = useRef<number | null>(null);
+
   // 4. State Ref for imperative loop
   const stateRef = useRef({
-    date, bounds, buildingsLayer, searchedLocation
+    date, bounds, buildingsLayer, searchedLocation, geojsonData, currentMinutes: 12 * 60,
+    showBuildings: true, showFloor: true, showShadows: true,
   });
   useEffect(() => {
-    stateRef.current = { date, bounds, buildingsLayer, searchedLocation };
-  }, [date, bounds, buildingsLayer, searchedLocation]);
+    stateRef.current = { date, bounds, buildingsLayer, searchedLocation, geojsonData, currentMinutes: stateRef.current.currentMinutes ?? 12 * 60, showBuildings, showFloor, showShadows };
+  }, [date, bounds, buildingsLayer, searchedLocation, geojsonData, showBuildings, showFloor, showShadows]);
+
+  // Invalidate shadow cache when buildings or date change
+  useEffect(() => { shadowCacheRef.current = null; }, [geojsonData, date]);
 
   // Cleanup debounce timers and abort controllers on unmount
   useEffect(() => {
@@ -499,7 +550,9 @@ export default function MapComponent() {
     const overlay = overlayRef.current;
     if (!overlay) return;
 
-    const { date, bounds, buildingsLayer, searchedLocation } = stateRef.current;
+    // Update currentMinutes for imperative consumers (minutes since midnight)
+    stateRef.current.currentMinutes = Math.round(timeOfDay * 60);
+    const { date, bounds, buildingsLayer, searchedLocation, geojsonData, showBuildings, showFloor, showShadows } = stateRef.current;
 
     const d = new Date(date);
     d.setHours(Math.floor(timeOfDay));
@@ -571,6 +624,7 @@ export default function MapComponent() {
     const lightingEffect = new LightingEffect({ ambientLight, sunLight });
 
     const baseLayers = [];
+    let shadowLayer: any = null;
 
     if (bounds) {
       const center = bounds.getCenter();
@@ -589,7 +643,7 @@ export default function MapComponent() {
         [lng - d, lat + d]
       ];
 
-      if (tintAlpha > 0) {
+      if (showFloor && tintAlpha > 0) {
         baseLayers.push(
           new PolygonLayer({
             id: 'night-tint',
@@ -608,7 +662,7 @@ export default function MapComponent() {
         groundAlpha = 60 + Math.floor(sunsetness * 40);
       }
 
-      baseLayers.push(
+      if (showFloor) baseLayers.push(
         new PolygonLayer({
           id: 'ground-plane',
           data: [{ polygon: groundPolygon }],
@@ -624,9 +678,69 @@ export default function MapComponent() {
           pickable: false
         })
       );
+
+      // Shadow overlay — 80m radius, 12m spacing (~140 pts), cached between frames
+      if (showShadows && sunPos.altitude > 0 && geojsonData) {
+        try {
+          const THRESHOLD = 0.02; // ~1° ≈ 4 min of sun movement
+          const cache = shadowCacheRef.current;
+          const needsRecompute = !cache
+            || Math.abs(cache.alt - sunPos.altitude) > THRESHOLD
+            || Math.abs(cache.az - sunPos.azimuth) > THRESHOLD
+            || Math.abs(cache.lat - lat) > 0.001
+            || Math.abs(cache.lng - lng) > 0.001;
+
+          const worker = shadowWorkerRef.current;
+
+          if (needsRecompute) {
+            // If a worker exists and no computation is pending, post a job.
+            if (worker && !shadowPendingRef.current) {
+              shadowPendingRef.current = true;
+              lastTimeOfDayRef.current = timeOfDay;
+              lastShadowRequestRef.current = { alt: sunPos.altitude, az: sunPos.azimuth, lat, lng };
+              try {
+                worker.postMessage({
+                  geojson: geojsonData,
+                  lat,
+                  lng,
+                  radiusKm: 0.08,
+                  spacingMeters: 12,
+                  sunAltitude: sunPos.altitude,
+                  sunAzimuth: sunPos.azimuth
+                });
+              } catch (e) {
+                console.warn('Failed to post to shadow worker', e);
+                shadowPendingRef.current = false;
+              }
+            }
+          }
+
+          // Render using cached points while a recompute is pending
+          const shadowPoints = shadowCacheRef.current?.pts ?? [];
+          if (shadowPoints.length > 0) {
+            shadowLayer = new ScatterplotLayer({
+              id: 'shadow-overlay',
+              data: shadowPoints,
+              getPosition: (d: any) => d.position,
+              getFillColor: (d: any) => d.inSun ? [255, 220, 50, 50] : [30, 30, 80, 60],
+              getRadius: 6,
+              radiusUnits: 'meters',
+              pickable: false,
+              shadowEnabled: false,
+            });
+          }
+        } catch (e) {
+          console.warn('Shadow overlay failed', e);
+          shadowPendingRef.current = false;
+        }
+      }
     }
 
-    if (buildingsLayer) {
+    if (shadowLayer) {
+      baseLayers.push(shadowLayer);
+    }
+
+    if (showBuildings && buildingsLayer) {
       baseLayers.push(buildingsLayer);
     }
 
@@ -651,6 +765,48 @@ export default function MapComponent() {
     overlay.setProps({ layers: baseLayers, effects: [lightingEffect] });
   }, []);
 
+  // Initialize shadow worker after renderDeckGL is defined
+  useEffect(() => {
+    try {
+      const w = new Worker(new URL('./workers/shadowWorker.ts', import.meta.url), { type: 'module' });
+      shadowWorkerRef.current = w;
+      w.onmessage = (ev: MessageEvent) => {
+        const data = ev.data;
+        if (data && data.pts) {
+          const params = lastShadowRequestRef.current;
+          shadowCacheRef.current = {
+            alt: params?.alt ?? 0,
+            az: params?.az ?? 0,
+            lat: params?.lat ?? 0,
+            lng: params?.lng ?? 0,
+            pts: data.pts
+          };
+        } else if (data && data.error) {
+          console.warn('shadowWorker error:', data.error);
+        }
+        shadowPendingRef.current = false;
+        const last = lastTimeOfDayRef.current;
+        if (last !== null) {
+          // Trigger a single re-render to pick up fresh shadows
+          renderDeckGL(last);
+        }
+      };
+      w.onerror = (err) => {
+        console.warn('shadowWorker onerror', err);
+        shadowPendingRef.current = false;
+      };
+    } catch (e) {
+      console.warn('Failed to create shadow worker', e);
+    }
+
+    return () => {
+      if (shadowWorkerRef.current) {
+        shadowWorkerRef.current.terminate();
+        shadowWorkerRef.current = null;
+      }
+    };
+  }, []);
+
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gray-100">
       {/* Search Bar & Discover Toggle */}
@@ -659,13 +815,58 @@ export default function MapComponent() {
           <Search className="w-5 h-5 text-gray-400 mr-2 flex-shrink-0" />
           <Autocomplete onPlaceSelect={handlePlaceSelect} />
         </div>
-        <button 
+        <button
           onClick={() => setIsDiscoverOpen(!isDiscoverOpen)}
           className="bg-white rounded-full shadow-lg px-4 py-3 border border-gray-100 flex items-center gap-2 hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700"
         >
           <Sparkles className="w-5 h-5 text-amber-500" />
           <span className="hidden sm:inline">Discover Sunny Spots</span>
         </button>
+        {/* Layers toggle */}
+        <div className="relative">
+          <button
+            onClick={() => setIsLayersOpen(v => !v)}
+            className={`bg-white rounded-full shadow-lg px-4 py-3 border transition-colors text-sm font-medium flex items-center gap-2 ${isLayersOpen ? 'border-blue-300 text-blue-600' : 'border-gray-100 text-gray-700 hover:bg-gray-50'}`}
+          >
+            <Layers className="w-5 h-5" />
+            <span className="hidden sm:inline">Layers</span>
+          </button>
+          {isLayersOpen && (
+            <div className="absolute right-0 top-14 bg-white rounded-2xl shadow-2xl border border-gray-100 p-4 w-48 z-30 flex flex-col gap-3">
+              {([
+                { label: 'Buildings', value: showBuildings, set: setShowBuildings },
+                { label: 'Ground / Floor', value: showFloor, set: setShowFloor },
+                { label: 'Sol Search', value: showShadows, set: setShowShadows },
+              ] as const).map(({ label, value, set }) => (
+                <label key={label} className="flex items-center justify-between cursor-pointer select-none">
+                  <span className="text-sm text-gray-700 font-medium">{label}</span>
+                  <button
+                    role="switch"
+                    aria-checked={value}
+                    onClick={() => set(v => !v)}
+                    className={`relative w-10 h-5 rounded-full transition-colors ${value ? 'bg-blue-500' : 'bg-gray-200'}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${value ? 'translate-x-5' : 'translate-x-0'}`} />
+                  </button>
+                </label>
+              ))}
+
+              <div className="pt-1">
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(window.location.href);
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 2000);
+                  }}
+                  className="flex items-center gap-2 text-sm text-gray-700 hover:text-gray-900"
+                >
+                  <Link className="w-4 h-4" />
+                  <span>{copied ? 'Copied!' : 'Copy link'}</span>
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Discover Sidebar */}
@@ -783,20 +984,29 @@ export default function MapComponent() {
         tiltInteractionEnabled={true}
         headingInteractionEnabled={true}
         onIdle={handleMapIdle}
+        onClick={(e: any) => {
+          const ll = e?.detail?.latLng;
+          if (ll) {
+            try {
+              setTimelineLocation({ lat: ll.lat(), lng: ll.lng() });
+            } catch {
+              setTimelineLocation({ lat: ll.lat, lng: ll.lng });
+            }
+          }
+        }}
         renderingType="VECTOR"
       />
 
       {/* Deck.gl Overlay is now managed imperatively via overlayRef */}
 
-      {/* Mobile Control Panel (collapsible via peer checkbox) */}
+      {/* Mobile Control Panel (collapsible via React state) */}
       <div className="md:hidden absolute bottom-6 left-4 right-4 z-10 flex justify-center">
-        <input id="cp-toggle" type="checkbox" className="peer hidden" />
         <div className="w-full max-w-xl">
           <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-white/20 overflow-hidden">
-            <label htmlFor="cp-toggle" className="flex items-center justify-center p-2 cursor-grab">
-              <div className="w-10 h-1.5 bg-gray-300 rounded-full peer-checked:bg-gray-400"></div>
-            </label>
-            <div className="transition-all duration-200 overflow-hidden max-h-20 peer-checked:max-h-[40vh]">
+            <button type="button" onClick={() => setIsPanelOpen(v => !v)} aria-expanded={isPanelOpen} className="flex items-center justify-center p-2 cursor-grab">
+              <div className="w-10 h-1.5 bg-gray-300 rounded-full"></div>
+            </button>
+            <div className={isPanelOpen ? 'transition-all duration-200 max-h-[40vh] overflow-auto' : 'transition-all duration-200 max-h-20 overflow-hidden'}>
               <div className="p-4">
                 <div className="flex flex-col gap-4">
                   <div className="flex justify-between items-center">
@@ -826,7 +1036,7 @@ export default function MapComponent() {
                         lng={bounds ? bounds.getCenter().lng() : -74.0060}
                         onRenderFrame={renderDeckGL}
                         initialMinutes={initialMinutes}
-                        onCommitMinutes={(m) => { updateUrl({ minutes: m }); }}
+                        onCommitMinutes={(m) => { updateUrl({ minutes: m }); setCurrentTimeMinutes(m); }}
                       />
                     </div>
                   </div>
@@ -868,13 +1078,27 @@ export default function MapComponent() {
                   lng={bounds ? bounds.getCenter().lng() : -74.0060}
                   onRenderFrame={renderDeckGL}
                   initialMinutes={initialMinutes}
-                  onCommitMinutes={(m) => { updateUrl({ minutes: m }); }}
+                  onCommitMinutes={(m) => { updateUrl({ minutes: m }); setCurrentTimeMinutes(m); }}
                 />
               </div>
             </div>
           </div>
         </div>
       </div>
+
+      {timelineLocation && (
+        <SunTimeline
+          lat={timelineLocation.lat}
+          lng={timelineLocation.lng}
+          date={date}
+          currentTimeMinutes={currentTimeMinutes}
+          onClose={() => setTimelineLocation(null)}
+          getSunExposureScore={(lat, lng, alt, az) =>
+            getSunExposureScore(lat, lng, stateRef.current.geojsonData, alt, az)
+          }
+        />
+      )}
+
     </div>
   );
 }
