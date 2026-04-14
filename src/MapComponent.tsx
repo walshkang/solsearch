@@ -51,9 +51,6 @@ function Autocomplete({ onPlaceSelect }: { onPlaceSelect: (location: google.maps
 export default function MapComponent() {
   const map = useMap();
   const [date, setDate] = useState<Date>(new Date());
-  
-  // Slider state (UI only)
-  const [sliderTime, setSliderTime] = useState<number>(14);
 
   const [geojsonData, setGeojsonData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -72,10 +69,10 @@ export default function MapComponent() {
 
   const currentTimestamp = useMemo(() => {
     const d = new Date(date);
-    d.setHours(Math.floor(sliderTime));
-    d.setMinutes((sliderTime % 1) * 60);
+    d.setHours(14);
+    d.setMinutes(0);
     return d.getTime();
-  }, [date, sliderTime]);
+  }, [date]);
 
   const handlePlaceSelect = (location: google.maps.LatLng) => {
     if (map) {
@@ -478,49 +475,10 @@ export default function MapComponent() {
     overlay.setProps({ layers: baseLayers, effects: [lightingEffect] });
   }, []);
 
-  // 6. Animation Loop for smooth shadow transitions
-  const renderTimeRef = useRef(14);
-  const targetTimeRef = useRef(14);
-  const frameRef = useRef<number | null>(null);
-
+  // 6. Temporary fallback render until external time controller is wired
   useEffect(() => {
-    targetTimeRef.current = sliderTime;
-  }, [sliderTime]);
-
-  useEffect(() => {
-    const loop = () => {
-      const diff = targetTimeRef.current - renderTimeRef.current;
-      if (Math.abs(diff) > 0.001) {
-        renderTimeRef.current += diff * 0.25; // Lerp factor (smoothly glide to target)
-        renderDeckGL(renderTimeRef.current);
-        frameRef.current = requestAnimationFrame(loop);
-      } else {
-        // Epsilon check: Target reached! Snap to exact target and stop the loop to save CPU/GPU.
-        if (renderTimeRef.current !== targetTimeRef.current) {
-          renderTimeRef.current = targetTimeRef.current;
-          renderDeckGL(renderTimeRef.current);
-        }
-        frameRef.current = null;
-      }
-    };
-
-    // Only start a new loop if one isn't already running
-    if (frameRef.current === null) {
-      frameRef.current = requestAnimationFrame(loop);
-    }
-
-    return () => {
-      if (frameRef.current !== null) {
-        cancelAnimationFrame(frameRef.current);
-        frameRef.current = null;
-      }
-    };
-  }, [sliderTime, renderDeckGL]);
-
-  // 7. Force render when dependencies change (not just time)
-  useEffect(() => {
-    renderDeckGL(renderTimeRef.current);
-  }, [date, bounds, buildingsLayer, searchedLocation, renderDeckGL]);
+    renderDeckGL(14.0);
+  }, [renderDeckGL]);
 
   return (
     <div className="relative w-full h-screen overflow-hidden bg-gray-100">
@@ -694,11 +652,8 @@ export default function MapComponent() {
                   min="0"
                   max="24"
                   step="0.25"
-                  value={sliderTime}
-                  onChange={(e) => {
-                    const val = parseFloat(e.target.value);
-                    setSliderTime(val);
-                  }}
+                  value={14}
+                  readOnly
                   className="w-full h-2 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-500"
                 />
                 <div className="flex justify-between text-[10px] text-gray-400 mt-2 font-medium">
