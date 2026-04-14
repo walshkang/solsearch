@@ -11,6 +11,49 @@ import { Search, Loader2, MapPin, Building, Sparkles, X, Sun } from 'lucide-reac
 import { GoogleGenAI } from '@google/genai';
 import TimeOfDayController from './components/TimeOfDayController';
 
+// --- URL state helpers ---
+function parseUrlState() {
+  const params = new URLSearchParams(window.location.search);
+  const lat = params.get('lat');
+  const lng = params.get('lng');
+  const zoom = params.get('zoom');
+  const dateStr = params.get('date');
+  const timeStr = params.get('time');
+  const out: any = {};
+  if (lat !== null && lng !== null) {
+    const latNum = parseFloat(lat);
+    const lngNum = parseFloat(lng);
+    if (!isNaN(latNum) && latNum >= -90 && latNum <= 90 && !isNaN(lngNum) && lngNum >= -180 && lngNum <= 180) {
+      out.lat = latNum;
+      out.lng = lngNum;
+    }
+  }
+  if (zoom !== null) {
+    const z = parseFloat(zoom);
+    if (!isNaN(z) && z >= 0 && z <= 22) out.zoom = z;
+  }
+  if (dateStr) {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) out.date = d;
+  }
+  if (timeStr) {
+    const t = parseInt(timeStr, 10);
+    if (!isNaN(t) && t >= 0 && t <= 1439) out.minutes = t;
+  }
+  return out;
+}
+
+function formatUrl({lat,lng,zoom,date,minutes}: {lat:number,lng:number,zoom:number,date:Date,minutes:number}) {
+  const u = new URL(window.location.href);
+  u.search = '';
+  u.searchParams.set('lat', lat.toFixed(6));
+  u.searchParams.set('lng', lng.toFixed(6));
+  u.searchParams.set('zoom', String(Math.round(zoom)));
+  u.searchParams.set('date', format(date,'yyyy-MM-dd'));
+  u.searchParams.set('time', String(Math.round(minutes)));
+  return u.pathname + u.search;
+}
+
 // --- Places Autocomplete Component ---
 function Autocomplete({ onPlaceSelect }: { onPlaceSelect: (location: google.maps.LatLng) => void }) {
   const [inputRef, setInputRef] = useState<HTMLInputElement | null>(null);
@@ -51,13 +94,67 @@ function Autocomplete({ onPlaceSelect }: { onPlaceSelect: (location: google.maps
 // --- Main Map Component ---
 export default function MapComponent() {
   const map = useMap();
+
+  const parsedParamsRef = useRef<{lat?:number,lng?:number,zoom?:number,minutes?:number,date?:Date} | null>(null);
+  const [initialMinutes, setInitialMinutes] = useState<number | undefined>(undefined);
+
+  // Parse URL on mount and seed date/time if present
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const parsed = parseUrlState();
+    if (parsed.date) setDate(parsed.date);
+    if (typeof parsed.minutes === 'number') setInitialMinutes(parsed.minutes);
+    parsedParamsRef.current = parsed;
+  }, []);
+
+  // Apply parsed center/zoom when map becomes available
+  useEffect(() => {
+    if (!map || !parsedParamsRef.current) return;
+    const p = parsedParamsRef.current;
+    if (typeof p.lat === 'number' && typeof p.lng === 'number') {
+      try {
+        map.panTo(new google.maps.LatLng(p.lat, p.lng));
+      } catch (e) {
+        map.panTo({ lat: p.lat, lng: p.lng });
+      }
+    }
+    if (typeof p.zoom === 'number') {
+      map.setZoom(p.zoom);
+      setZoom(p.zoom);
+    }
+    parsedParamsRef.current = null;
+  }, [map]);
+
+  // Helper to update URL with current or provided overrides
+  const updateUrl = ({date: dateOverride, minutes: minutesOverride, centerOverride, zoomOverride}: {date?: Date, minutes?: number, centerOverride?: {lat:number,lng:number}, zoomOverride?: number} = {}) => {
+    if (typeof window === 'undefined') return;
+    let latVal: number, lngVal: number, zoomVal: number;
+    if (centerOverride) {
+      latVal = centerOverride.lat; lngVal = centerOverride.lng;
+    } else if (map) {
+      const c = map.getCenter();
+      latVal = c.lat();
+      lngVal = c.lng();
+    } else if (bounds) {
+      const c = bounds.getCenter();
+      latVal = c.lat(); lngVal = c.lng();
+    } else {
+      latVal = 40.7128; lngVal = -74.0060;
+    }
+    if (typeof zoomOverride === 'number') zoomVal = zoomOverride;
+    else zoomVal = map ? (map.getZoom() || zoom) : zoom;
+    const dateVal = dateOverride || date;
+    const minutesVal = (typeof minutesOverride === 'number') ? minutesOverride : (typeof initialMinutes === 'number' ? initialMinutes : 12 * 60);
+    const minutesFinal = Math.round(minutesVal);
+    const newPath = formatUrl({lat: latVal, lng: lngVal, zoom: zoomVal, date: dateVal, minutes: minutesFinal});
+    history.replaceState(null, '', newPath);
+  };
   const [date, setDate] = useState<Date>(new Date());
 
   const [geojsonData, setGeojsonData] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [bounds, setBounds] = useState<google.maps.LatLngBounds | null>(null);
   const [zoom, setZoom] = useState(16);
-  const [showLoadButton, setShowLoadButton] = useState(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [searchedLocation, setSearchedLocation] = useState<{lat: number, lng: number} | null>(null);
   const [highlightedFeatureId, setHighlightedFeatureId] = useState<string | null>(null);
@@ -95,7 +192,7 @@ export default function MapComponent() {
     }
   }, [searchedLocation, geojsonData]);
 
-  const fetchOSMBuildings = async (bbox: number[]) => {
+  const fetchOSMBuildings = async (bbox: number[], signal?: AbortSignal) => {
     const query = `
       [out:json][timeout:60];
       (
@@ -123,19 +220,67 @@ export default function MapComponent() {
           body: `data=${encodeURIComponent(query)}`,
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded'
-          }
+          },
+          signal
         });
         if (!response.ok) {
           throw new Error(`HTTP error! status: ${response.status}`);
         }
         const data = await response.json();
         return osmtogeojson(data);
-      } catch (err) {
+      } catch (err: any) {
+        if (err.name === 'AbortError') {
+          throw err;
+        }
         console.warn(`Failed to fetch from ${url}:`, err);
         lastError = err;
       }
     }
     throw lastError || new Error('All Overpass API endpoints failed');
+  };
+
+  // Refs for debounce and cancellation of building fetches
+  const debounceTimerRef = useRef<number | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Auto-load buildings with cancellation support
+  const autoLoadBuildings = async () => {
+    if (!bounds) return;
+    // Abort any previous in-flight fetch (defensive)
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    const ne = bounds.getNorthEast();
+    const sw = bounds.getSouthWest();
+
+    const bbox = [
+      sw.lng(),
+      sw.lat(),
+      ne.lng(),
+      ne.lat()
+    ];
+
+    setLoading(true);
+    setErrorMsg(null);
+
+    try {
+      const data = await fetchOSMBuildings(bbox, controller.signal);
+      setGeojsonData(data);
+    } catch (err: any) {
+      if (err.name === 'AbortError') {
+        // Fetch was aborted; do nothing
+        return;
+      }
+      console.error('Failed to fetch OSM data:', err);
+      setErrorMsg(err.message || "Failed to load buildings. The server might be overloaded.");
+    } finally {
+      setLoading(false);
+      abortControllerRef.current = null;
+    }
   };
 
   const handleMapIdle = (e: MapEvent) => {
@@ -146,7 +291,32 @@ export default function MapComponent() {
     if (currentZoom) setZoom(currentZoom);
     if (currentBounds) {
       setBounds(currentBounds);
-      setShowLoadButton(true);
+    }
+
+    // Update URL with new center/zoom (preserve date and last committed minutes)
+    try {
+      updateUrl();
+    } catch (e) {
+      // noop
+    }
+
+    // Clear any pending debounce timer
+    if (debounceTimerRef.current) {
+      window.clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    // Abort in-flight fetches when the map moves
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+
+    // Schedule auto-load when zoom is sufficient
+    if (currentZoom !== undefined && currentZoom >= 15.5) {
+      debounceTimerRef.current = window.setTimeout(() => {
+        autoLoadBuildings();
+        debounceTimerRef.current = null;
+      }, 500);
     }
   };
 
@@ -164,7 +334,6 @@ export default function MapComponent() {
     ];
 
     setLoading(true);
-    setShowLoadButton(false);
     setErrorMsg(null);
     
     try {
@@ -172,7 +341,6 @@ export default function MapComponent() {
       setGeojsonData(data);
     } catch (err: any) {
       console.error('Failed to fetch OSM data:', err);
-      setShowLoadButton(true);
       setErrorMsg(err.message || "Failed to load buildings. The server might be overloaded.");
     } finally {
       setLoading(false);
@@ -312,6 +480,20 @@ export default function MapComponent() {
     stateRef.current = { date, bounds, buildingsLayer, searchedLocation };
   }, [date, bounds, buildingsLayer, searchedLocation]);
 
+  // Cleanup debounce timers and abort controllers on unmount
+  useEffect(() => {
+    return () => {
+      if (debounceTimerRef.current) {
+        window.clearTimeout(debounceTimerRef.current);
+        debounceTimerRef.current = null;
+      }
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
+
   // 5. Render function (bypasses React render cycle)
   const renderDeckGL = useCallback((timeOfDay: number) => {
     const overlay = overlayRef.current;
@@ -374,14 +556,14 @@ export default function MapComponent() {
 
     const ambientLight = new AmbientLight({
       id: 'ambient',
-      color: sunColor,
+      color: sunColor as [number, number, number],
       intensity: 0.5
     });
 
     const sunLight = new SunLight({
       id: 'sunlight',
       timestamp: renderTimestamp,
-      color: sunColor,
+      color: sunColor as [number, number, number],
       intensity: 4.5,
       _shadow: true
     });
@@ -473,7 +655,7 @@ export default function MapComponent() {
     <div className="relative w-full h-screen overflow-hidden bg-gray-100">
       {/* Search Bar & Discover Toggle */}
       <div className="absolute top-4 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[600px] z-20 flex gap-2">
-        <div className="bg-white rounded-full shadow-lg flex items-center px-4 py-3 border border-gray-100 flex-1">
+        <div className="bg-white rounded-full shadow-lg flex items-center px-4 py-3 border border-gray-100 flex-1 min-w-[180px]">
           <Search className="w-5 h-5 text-gray-400 mr-2 flex-shrink-0" />
           <Autocomplete onPlaceSelect={handlePlaceSelect} />
         </div>
@@ -558,20 +740,16 @@ export default function MapComponent() {
           <div className="bg-white/90 backdrop-blur px-4 py-2 rounded-full shadow-md text-sm font-medium text-gray-600 border border-gray-200">
             Zoom in closer to load 3D buildings
           </div>
-        ) : showLoadButton ? (
-          <button
-            onClick={handleLoadBuildings}
-            disabled={loading}
-            className="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2.5 rounded-full shadow-lg flex items-center text-sm font-medium transition-all disabled:opacity-80"
-          >
-            {loading ? (
+        ) : (
+          loading ? (
+            <div
+              className="bg-blue-600 text-white px-5 py-2.5 rounded-full shadow-lg flex items-center text-sm font-medium transition-all"
+            >
               <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-            ) : (
-              <Building className="w-4 h-4 mr-2" />
-            )}
-            {loading ? 'Loading...' : 'Load Buildings in View'}
-          </button>
-        ) : null}
+              Loading...
+            </div>
+          ) : null
+        )}
         
         {errorMsg && (
           <div className="bg-red-50 text-red-600 px-4 py-2.5 rounded-xl shadow-lg text-sm font-medium border border-red-100 flex items-center gap-3 max-w-md text-center">
@@ -584,7 +762,7 @@ export default function MapComponent() {
       </div>
 
       {/* UI Hint */}
-      <div className="absolute top-36 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
+      <div className="hidden md:block absolute top-36 left-1/2 -translate-x-1/2 z-10 pointer-events-none">
         <div className="bg-black/50 backdrop-blur px-3 py-1.5 rounded-full text-xs font-medium text-white/90 shadow-lg">
           Hold <kbd className="bg-white/20 px-1.5 py-0.5 rounded mx-1">Shift</kbd> + Drag (or use 2-finger twist) to rotate 3D view
         </div>
@@ -610,8 +788,57 @@ export default function MapComponent() {
 
       {/* Deck.gl Overlay is now managed imperatively via overlayRef */}
 
+      {/* Mobile Control Panel (collapsible via peer checkbox) */}
+      <div className="md:hidden absolute bottom-6 left-4 right-4 z-10 flex justify-center">
+        <input id="cp-toggle" type="checkbox" className="peer hidden" />
+        <div className="w-full max-w-xl">
+          <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl border border-white/20 overflow-hidden">
+            <label htmlFor="cp-toggle" className="flex items-center justify-center p-2 cursor-grab">
+              <div className="w-10 h-1.5 bg-gray-300 rounded-full peer-checked:bg-gray-400"></div>
+            </label>
+            <div className="transition-all duration-200 overflow-hidden max-h-20 peer-checked:max-h-[40vh]">
+              <div className="p-4">
+                <div className="flex flex-col gap-4">
+                  <div className="flex justify-between items-center">
+                    <h3 className="font-semibold text-gray-800 flex items-center">
+                      <MapPin className="w-4 h-4 mr-2 text-blue-500" />
+                      Sunlight Simulator
+                    </h3>
+                    <div className="text-sm font-medium text-blue-600 bg-blue-50 px-3 py-1 rounded-full">
+                      {format(date, 'MMM d, yyyy')}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-4">
+                    <div>
+                      <label className="text-xs font-medium text-gray-500 mb-2 block uppercase tracking-wider">Date</label>
+                      <input
+                        type="date"
+                        value={format(date, 'yyyy-MM-dd')}
+                        onChange={(e) => { const newDate = new Date(e.target.value); setDate(newDate); updateUrl({ date: newDate }); }}
+                        className="w-full text-sm border-gray-200 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 py-2 px-3 bg-gray-50"
+                      />
+                    </div>
+                    <div className="max-h-[28vh] overflow-auto">
+                      <TimeOfDayController
+                        date={date}
+                        lat={bounds ? bounds.getCenter().lat() : 40.7128}
+                        lng={bounds ? bounds.getCenter().lng() : -74.0060}
+                        onRenderFrame={renderDeckGL}
+                        initialMinutes={initialMinutes}
+                        onCommitMinutes={(m) => { updateUrl({ minutes: m }); }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Control Panel */}
-      <div className="absolute bottom-6 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[500px] z-10">
+      <div className="hidden md:block absolute bottom-6 left-4 right-4 md:left-1/2 md:-translate-x-1/2 md:w-[500px] z-10">
         <div className="bg-white/90 backdrop-blur-md rounded-2xl shadow-xl p-5 border border-white/20">
           <div className="flex flex-col gap-5">
             <div className="flex justify-between items-center">
@@ -630,7 +857,7 @@ export default function MapComponent() {
                 <input
                   type="date"
                   value={format(date, 'yyyy-MM-dd')}
-                  onChange={(e) => setDate(new Date(e.target.value))}
+                  onChange={(e) => { const newDate = new Date(e.target.value); setDate(newDate); updateUrl({ date: newDate }); }}
                   className="w-full text-sm border-gray-200 rounded-lg shadow-sm focus:ring-blue-500 focus:border-blue-500 py-2 px-3 bg-gray-50"
                 />
               </div>
@@ -640,6 +867,8 @@ export default function MapComponent() {
                   lat={bounds ? bounds.getCenter().lat() : 40.7128}
                   lng={bounds ? bounds.getCenter().lng() : -74.0060}
                   onRenderFrame={renderDeckGL}
+                  initialMinutes={initialMinutes}
+                  onCommitMinutes={(m) => { updateUrl({ minutes: m }); }}
                 />
               </div>
             </div>

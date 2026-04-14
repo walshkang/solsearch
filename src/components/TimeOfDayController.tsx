@@ -6,16 +6,21 @@ interface TimeOfDayControllerProps {
   date: Date;
   lat: number;
   lng: number;
+  // Optional initial minutes since midnight (0-1439) to seed the controller UI
+  initialMinutes?: number;
+  // Optional callback when the user commits a new time (mouse up / smart button)
+  onCommitMinutes?: (minutes: number) => void;
 }
 
-export default function TimeOfDayController({ onRenderFrame, date, lat, lng }: TimeOfDayControllerProps) {
+export default function TimeOfDayController({ onRenderFrame, date, lat, lng, initialMinutes, onCommitMinutes }: TimeOfDayControllerProps) {
   // UI State: Store time in minutes (0 to 1440) for the slider.
   // This state ONLY updates the UI label and slider position while dragging.
-  const [displayMinutes, setDisplayMinutes] = useState(12 * 60); // Default to Noon
+  const initial = typeof initialMinutes === 'number' ? initialMinutes : 12 * 60;
+  const [displayMinutes, setDisplayMinutes] = useState(initial); // Default to Noon if not provided
 
   // Refs for the imperative animation loop
-  const currentMinutesRef = useRef(12 * 60);
-  const targetMinutesRef = useRef(12 * 60);
+  const currentMinutesRef = useRef(initial);
+  const targetMinutesRef = useRef(initial);
   const frameRef = useRef<number | null>(null);
 
   // Calculate solar times dynamically based on the provided date and location
@@ -87,6 +92,7 @@ export default function TimeOfDayController({ onRenderFrame, date, lat, lng }: T
   // On commit (mouse up): Set target and start animation loop
   const handleSliderCommit = () => {
     targetMinutesRef.current = displayMinutes;
+    if (onCommitMinutes) onCommitMinutes(Math.round(displayMinutes));
     startAnimation();
   };
 
@@ -94,6 +100,7 @@ export default function TimeOfDayController({ onRenderFrame, date, lat, lng }: T
   const handleSmartTimeClick = (minutes: number) => {
     setDisplayMinutes(minutes);
     targetMinutesRef.current = minutes;
+    if (onCommitMinutes) onCommitMinutes(Math.round(minutes));
     startAnimation();
   };
 
