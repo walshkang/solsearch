@@ -109,20 +109,27 @@ export const useAppStore = create<AppState>((set: any, _get: any) => ({
   setIsDiscovering: (loading: boolean) => set(() => ({ isDiscovering: loading })),
 }))
 
-// URL sync subscriber (must live in this file)
-useAppStore.subscribe((state) => {
-  if (typeof window === 'undefined') return
-
-  const params = new URLSearchParams()
-  params.set('lat', String(state.mapViewState.lat))
-  params.set('lng', String(state.mapViewState.lng))
-  params.set('zoom', String(state.mapViewState.zoom))
-  params.set('h', String(state.mapViewState.heading))
-  params.set('tilt', String(state.mapViewState.tilt))
-  params.set('t', String(state.timeOfDayMinutes))
-  const newUrl = '?' + params.toString()
-  // replace state without creating a history entry
-  window.history.replaceState(null, '', newUrl)
-})
+// URL sync subscriber — debounced to avoid thrashing replaceState on every frame.
+// Only reacts to the slices that actually appear in the URL.
+let urlSyncTimer: ReturnType<typeof setTimeout> | null = null
+useAppStore.subscribe(
+  (state) => ({ mapViewState: state.mapViewState, timeOfDayMinutes: state.timeOfDayMinutes }),
+  (slice) => {
+    if (typeof window === 'undefined') return
+    if (urlSyncTimer) clearTimeout(urlSyncTimer)
+    urlSyncTimer = setTimeout(() => {
+      const { mapViewState, timeOfDayMinutes } = slice
+      const params = new URLSearchParams()
+      params.set('lat', String(mapViewState.lat))
+      params.set('lng', String(mapViewState.lng))
+      params.set('zoom', String(mapViewState.zoom))
+      params.set('h', String(mapViewState.heading))
+      params.set('tilt', String(mapViewState.tilt))
+      params.set('t', String(timeOfDayMinutes))
+      window.history.replaceState(null, '', '?' + params.toString())
+    }, 300)
+  },
+  { equalityFn: (a, b) => a.mapViewState === b.mapViewState && a.timeOfDayMinutes === b.timeOfDayMinutes }
+)
 
 export default useAppStore

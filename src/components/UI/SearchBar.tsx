@@ -36,8 +36,12 @@ const SearchBar: React.FC<SearchBarProps> = ({ googleApiKey, geminiApiKey }) => 
 
       const ranked = await rankVenuesBySunExposure(rankingInput, currentHour, geminiApiKey)
 
+      // Build lookup by place ID for O(1) matching — no name fallback to avoid
+      // ambiguity when two venues share a name.
+      const rankedById = new Map(ranked.map((rr) => [rr.id, rr]))
+
       const places = raw.map((r) => {
-        const match = ranked.find((rr) => rr.id === r.id || rr.id === r.name)
+        const match = rankedById.get(r.id)
         return {
           id: r.id,
           name: r.name,

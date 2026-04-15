@@ -16,9 +16,11 @@ export interface RankedVenue {
 }
 
 let singletonClient: any = null;
+let singletonKey: string | null = null;
 function getClient(apiKey: string) {
-  if (!singletonClient) {
+  if (!singletonClient || singletonKey !== apiKey) {
     singletonClient = new GoogleGenAI({ apiKey });
+    singletonKey = apiKey;
   }
   return singletonClient;
 }
@@ -84,6 +86,7 @@ Venues: ${JSON.stringify(venues, null, 2)}`;
 
     return out;
   } catch (e) {
+    console.error('[aiService] rankVenuesBySunExposure failed:', e);
     // Graceful fallback: return neutral scores
     return venues.map((v) => ({ id: String(v.id ?? v.name ?? ''), sunScore: 50, reasoning: 'unavailable' }));
   }

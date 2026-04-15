@@ -30,6 +30,7 @@ export default function SunRaysOverlay() {
     if (!ctx) return
 
     ctx.clearRect(0, 0, W, H)
+    if (W === 0 || H === 0) return
     if (!sunPos.isAboveHorizon || altDeg < 2) return
 
     // Unit vector pointing FROM sun source TOWARD screen (screen-space, y-down)

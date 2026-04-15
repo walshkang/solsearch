@@ -5,11 +5,9 @@ import { useAppStore } from '../../store/useAppStore'
 
 export interface GoogleMapProviderProps {
   apiKey: string
-  mapsApiKey: string
 }
 
-export default function GoogleMapProvider({ apiKey, mapsApiKey }: GoogleMapProviderProps) {
-  void mapsApiKey
+export default function GoogleMapProvider({ apiKey }: GoogleMapProviderProps) {
   const mapViewState = useAppStore((s) => s.mapViewState)
   const setMapViewState = useAppStore((s) => s.setMapViewState)
 
@@ -35,7 +33,7 @@ export default function GoogleMapProvider({ apiKey, mapsApiKey }: GoogleMapProvi
           tilt={mapViewState.tilt}
           onCameraChanged={handleCameraChanged}
           // Required env var: VITE_GOOGLE_MAP_ID (must be a vector-enabled Map ID for tilt/rotation)
-          mapId={import.meta.env.VITE_GOOGLE_MAP_ID}
+          mapId={import.meta.env.VITE_GOOGLE_MAP_ID ?? undefined}
           mapTypeId="roadmap"
           gestureHandling="greedy"
           rotateControl

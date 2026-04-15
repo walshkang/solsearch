@@ -4,7 +4,7 @@ import Sidebar from './components/UI/Sidebar'
 
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? ''
 const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? ''
-const MAPTILER_KEY = import.meta.env.VITE_MAPTILER_KEY ?? ''
+
 
 type ErrorBoundaryState = { hasError: boolean; error?: Error | null }
 
@@ -36,7 +36,7 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, Error
       )
     }
 
-    return this.props.children as any
+    return this.props.children
   }
 }
 
@@ -54,7 +54,7 @@ export default function App() {
       <div className="w-screen h-screen relative overflow-hidden bg-zinc-950">
         {/* Map provider fills the screen */}
         <div className="absolute inset-0 pointer-events-auto">
-          <GoogleMapProvider apiKey={GOOGLE_MAPS_KEY} mapsApiKey={MAPTILER_KEY} />
+          <GoogleMapProvider apiKey={GOOGLE_MAPS_KEY} />
         </div>
 
         {/* Sidebar overlays map. Container uses pointer-events-none so the map receives events where sidebar doesn't cover. Sidebar itself handles pointer events. */}
