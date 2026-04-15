@@ -332,7 +332,7 @@ export default function MapComponent() {
       id: 'buildings',
       data: `https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=${maptilerKey}`,
       minZoom: 14,
-      maxZoom: 16,
+      maxZoom: 15,
       extruded: true,
       getElevation: (f: any) => {
         const p = f?.properties || {};
@@ -347,12 +347,17 @@ export default function MapComponent() {
         return 12;
       },
       getFillColor: (f: any) => {
-        const alpha = zoom > 16.5 ? 90 : 200;
-        return f.id === highlightedFeatureId ? [59, 130, 246, alpha + 40] : [245, 245, 245, alpha];
+        // Smoothly vary alpha with zoom so buildings become more opaque as user zooms in
+        const z = Math.max(0, Math.min(15, zoom || 0));
+        const fillAlpha = Math.round(100 + ((z - 12) / 3) * 140); // ~100 at z=12, ~240 at z=15
+        const alpha = Math.max(40, Math.min(255, fillAlpha));
+        return f.id === highlightedFeatureId ? [59, 130, 246, Math.min(255, alpha + 40)] : [245, 245, 245, alpha];
       },
       getLineColor: (f: any) => {
-        const alpha = zoom > 16.5 ? 60 : 120;
-        return f.id === highlightedFeatureId ? [255, 255, 255, alpha + 55] : [200, 200, 200, alpha];
+        const z = Math.max(0, Math.min(15, zoom || 0));
+        const lineAlpha = Math.round(60 + ((z - 12) / 3) * 80);
+        const alpha = Math.max(30, Math.min(200, lineAlpha));
+        return f.id === highlightedFeatureId ? [255, 255, 255, Math.min(255, alpha + 55)] : [200, 200, 200, alpha];
       },
       // Only render the 'building' layer from the tile layers
       layers: ['building'],
@@ -410,6 +415,8 @@ export default function MapComponent() {
 
     // Update currentMinutes for imperative consumers (minutes since midnight)
     stateRef.current.currentMinutes = Math.round(timeOfDay * 60);
+    // Keep React state in sync so UI widgets (SunTimeline, controllers) show accurate time while animating
+    setCurrentTimeMinutes(stateRef.current.currentMinutes);
     const { date, bounds, buildingsLayer, searchedLocation, geojsonData, showBuildings, showFloor, showShadows } = stateRef.current;
 
     const d = new Date(date);
@@ -491,7 +498,7 @@ export default function MapComponent() {
       const sunPos = SunCalc.getPosition(new Date(renderTimestamp), lat, lng);
       
       const darkness = Math.max(0, Math.min(1, -sunPos.altitude / 0.1));
-      const tintAlpha = Math.floor(darkness * 180);
+      const tintAlpha = Math.floor(darkness * 100);
 
       const d = 0.1;
       const groundPolygon = [
