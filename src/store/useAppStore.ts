@@ -14,6 +14,8 @@ export interface MapViewState {
   lat: number
   lng: number
   zoom: number
+  heading: number   // 0–360, degrees clockwise from north
+  tilt: number      // 0–67.5, degrees from vertical
 }
 
 export interface LayerToggles {
@@ -52,23 +54,28 @@ const parsedLat = urlParams.get('lat')
 const parsedLng = urlParams.get('lng')
 const parsedZoom = urlParams.get('zoom')
 const parsedT = urlParams.get('t')
+const parsedHeading = urlParams.get('h')
+const parsedTilt = urlParams.get('tilt')
 
-const latFromUrl = parsedLat ? Number(parsedLat) : undefined
-const lngFromUrl = parsedLng ? Number(parsedLng) : undefined
-const zoomFromUrl = parsedZoom ? Number(parsedZoom) : undefined
-const tFromUrl = parsedT ? Number(parsedT) : undefined
+function parseUrlNum(raw: string | null): number | undefined {
+  if (!raw) return undefined
+  const n = Number(raw)
+  return isNaN(n) ? undefined : n
+}
 
 // Defaults
 const defaultDate = new Date()
 defaultDate.setHours(0, 0, 0, 0) // zero the time portion
 
 const defaultMapViewState: MapViewState = {
-  lat: typeof latFromUrl === 'number' && !isNaN(latFromUrl) ? latFromUrl : 37.7749,
-  lng: typeof lngFromUrl === 'number' && !isNaN(lngFromUrl) ? lngFromUrl : -122.4194,
-  zoom: typeof zoomFromUrl === 'number' && !isNaN(zoomFromUrl) ? zoomFromUrl : 15,
+  lat: parseUrlNum(parsedLat) ?? 37.7749,
+  lng: parseUrlNum(parsedLng) ?? -122.4194,
+  zoom: parseUrlNum(parsedZoom) ?? 15,
+  heading: parseUrlNum(parsedHeading) ?? 0,
+  tilt: parseUrlNum(parsedTilt) ?? 45,
 }
 
-const defaultTimeOfDay = typeof tFromUrl === 'number' && !isNaN(tFromUrl) ? tFromUrl : 720
+const defaultTimeOfDay = parseUrlNum(parsedT) ?? 720
 
 export const useAppStore = create<AppState>((set: any, _get: any) => ({
   // state
@@ -110,6 +117,8 @@ useAppStore.subscribe((state) => {
   params.set('lat', String(state.mapViewState.lat))
   params.set('lng', String(state.mapViewState.lng))
   params.set('zoom', String(state.mapViewState.zoom))
+  params.set('h', String(state.mapViewState.heading))
+  params.set('tilt', String(state.mapViewState.tilt))
   params.set('t', String(state.timeOfDayMinutes))
   const newUrl = '?' + params.toString()
   // replace state without creating a history entry
