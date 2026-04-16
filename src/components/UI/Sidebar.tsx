@@ -3,11 +3,6 @@ import TimeController from './TimeController'
 import SearchBar from './SearchBar'
 import useAppStore from '../../store/useAppStore'
 
-interface SidebarProps {
-  googleApiKey: string
-  geminiApiKey: string
-}
-
 const badgeClassFor = (score?: number) => {
   if (score == null) return 'bg-gray-600 text-white'
   if (score > 70) return 'bg-green-500 text-black'
@@ -15,7 +10,7 @@ const badgeClassFor = (score?: number) => {
   return 'bg-red-500 text-white'
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ googleApiKey, geminiApiKey }) => {
+const Sidebar: React.FC = () => {
   const discoveredPlaces = useAppStore((s) => s.discoveredPlaces)
   const isDiscovering = useAppStore((s) => s.isDiscovering)
   const layerToggles = useAppStore((s) => s.layerToggles)
@@ -26,7 +21,7 @@ const Sidebar: React.FC<SidebarProps> = ({ googleApiKey, geminiApiKey }) => {
       <div className="space-y-3">
         <TimeController />
 
-        <SearchBar googleApiKey={googleApiKey} geminiApiKey={geminiApiKey} />
+        <SearchBar />
 
         <div className="mt-3">
           <div className="flex items-center gap-4 text-sm">

@@ -37,6 +37,7 @@ interface AppState {
   // Discovered venues
   discoveredPlaces: Place[]
   isDiscovering: boolean
+  lastSearchCenter: { lat: number; lng: number } | null
 
   // Actions
   setCurrentDate: (date: Date) => void
@@ -45,6 +46,7 @@ interface AppState {
   toggleLayer: (key: keyof LayerToggles) => void
   setDiscoveredPlaces: (places: Place[]) => void
   setIsDiscovering: (loading: boolean) => void
+  setLastSearchCenter: (center: { lat: number; lng: number }) => void
 }
 
 // Parse URL params for initial values (if running in a browser)
@@ -68,8 +70,8 @@ const defaultDate = new Date()
 defaultDate.setHours(0, 0, 0, 0) // zero the time portion
 
 const defaultMapViewState: MapViewState = {
-  lat: parseUrlNum(parsedLat) ?? 37.7749,
-  lng: parseUrlNum(parsedLng) ?? -122.4194,
+  lat: parseUrlNum(parsedLat) ?? 40.7549,
+  lng: parseUrlNum(parsedLng) ?? -73.9840,
   zoom: parseUrlNum(parsedZoom) ?? 15,
   heading: parseUrlNum(parsedHeading) ?? 0,
   tilt: parseUrlNum(parsedTilt) ?? 45,
@@ -91,6 +93,7 @@ export const useAppStore = create<AppState>((set: any, _get: any) => ({
 
   discoveredPlaces: [],
   isDiscovering: false,
+  lastSearchCenter: null,
 
   // actions
   setCurrentDate: (date: Date) => set(() => ({ currentDate: date })),
@@ -107,6 +110,8 @@ export const useAppStore = create<AppState>((set: any, _get: any) => ({
   setDiscoveredPlaces: (places: Place[]) => set(() => ({ discoveredPlaces: places })),
 
   setIsDiscovering: (loading: boolean) => set(() => ({ isDiscovering: loading })),
+
+  setLastSearchCenter: (center) => set(() => ({ lastSearchCenter: center })),
 }))
 
 // URL sync subscriber — debounced to avoid thrashing replaceState on every frame.

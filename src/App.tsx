@@ -1,6 +1,7 @@
 import React from 'react'
-import GoogleMapProvider from './components/Map/GoogleMapProvider'
+import MapLibreProvider from './components/Map/MapLibreProvider'
 import Sidebar from './components/UI/Sidebar'
+import FindSunShadeButton from './components/UI/FindSunShadeButton'
 
 const GOOGLE_MAPS_KEY = import.meta.env.VITE_GOOGLE_MAPS_API_KEY ?? ''
 const GEMINI_KEY = import.meta.env.VITE_GEMINI_API_KEY ?? ''
@@ -41,10 +42,10 @@ class ErrorBoundary extends React.Component<{ children: React.ReactNode }, Error
 }
 
 export default function App() {
-  if (!GOOGLE_MAPS_KEY || !GEMINI_KEY) {
+  if (!GEMINI_KEY) {
     return (
       <div className="w-screen h-screen relative overflow-hidden bg-zinc-950 text-white flex items-center justify-center">
-        Missing API keys. Set VITE_GOOGLE_MAPS_API_KEY and VITE_GEMINI_API_KEY in .env
+        Missing API key. Set VITE_GEMINI_API_KEY in .env
       </div>
     )
   }
@@ -54,13 +55,20 @@ export default function App() {
       <div className="w-screen h-screen relative overflow-hidden bg-zinc-950">
         {/* Map provider fills the screen */}
         <div className="absolute inset-0 pointer-events-auto">
-          <GoogleMapProvider apiKey={GOOGLE_MAPS_KEY} />
+          <MapLibreProvider />
         </div>
 
-        {/* Sidebar overlays map. Container uses pointer-events-none so the map receives events where sidebar doesn't cover. Sidebar itself handles pointer events. */}
+        {/* Sidebar overlays map */}
         <div className="absolute left-0 top-0 h-full pointer-events-none">
           <div className="pointer-events-auto">
-            <Sidebar googleApiKey={GOOGLE_MAPS_KEY} geminiApiKey={GEMINI_KEY} />
+            <Sidebar />
+          </div>
+        </div>
+
+        {/* Floating "Find Sun & Shade" button — centered on the map area to the right of the sidebar */}
+        <div className="absolute top-4 pointer-events-none" style={{ left: '320px', right: 0, display: 'flex', justifyContent: 'center' }}>
+          <div className="pointer-events-auto">
+            <FindSunShadeButton googleApiKey={GOOGLE_MAPS_KEY} geminiApiKey={GEMINI_KEY} />
           </div>
         </div>
       </div>
