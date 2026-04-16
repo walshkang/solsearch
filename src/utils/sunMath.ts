@@ -45,8 +45,10 @@ export function getSunLightConfig(
   timeOfDayMinutes: number,
 ): SunLightConfig {
   const timestamp = withMinutes(currentDate, timeOfDayMinutes).getTime()
-  const normalizedAltitude = clamp((sunPos.altitude + Math.PI / 2) / Math.PI, 0, 1)
-  const intensity = clamp(0.2 + normalizedAltitude * 1.8, 0.2, 2)
+  // 0 at horizon, 1 at zenith — use only the above-horizon range (0–π/2)
+  const normalizedAltitude = clamp(sunPos.altitude / (Math.PI / 2), 0, 1)
+  // Ramps from 0.2 (low sun) to 1.0 (noon). Cap at 1.0 so we don't over-power diffuse.
+  const intensity = clamp(0.2 + normalizedAltitude * 0.8, 0, 1)
 
   return {
     timestamp,

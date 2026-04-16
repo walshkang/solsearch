@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import Map, { type ViewStateChangeEvent } from 'react-map-gl/maplibre'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import DeckGLOverlay from './DeckGLOverlay'
-import SunRaysOverlay from './SunRaysOverlay'
 import { useAppStore } from '../../store/useAppStore'
 
 const MAP_STYLE = `https://api.maptiler.com/maps/streets-v2/style.json?key=${import.meta.env.VITE_MAPTILER_KEY}`
@@ -63,7 +62,6 @@ export default function MapLibreProvider() {
       >
         <DeckGLOverlay />
       </Map>
-      <SunRaysOverlay />
       <GestureHint />
     </div>
   )
