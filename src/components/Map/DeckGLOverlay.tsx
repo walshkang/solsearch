@@ -12,7 +12,13 @@ type BuildingFeature = {
     render_height?: number
     height?: number
     levels?: number
-  }
+  } | null
+}
+
+export function getBuildingElevation(feature: BuildingFeature): number {
+  const p = feature.properties
+  if (!p) return 10
+  return p.render_height ?? p.height ?? (p.levels ? p.levels * 3.5 : 10)
 }
 
 // Higher ambient so the unlit faces of buildings stay readable.
@@ -116,10 +122,7 @@ export default function DeckGLOverlay() {
           maxZoom: 14,
           extruded: true,
           loadOptions: { mvt: { layers: ['building'] } },
-          getElevation: (feature: BuildingFeature) =>
-            feature.properties.render_height ??
-            feature.properties.height ??
-            (feature.properties.levels ? feature.properties.levels * 3.5 : 10),
+          getElevation: (feature: BuildingFeature) => getBuildingElevation(feature),
           getFillColor: [74, 85, 104, 255],
           material: BUILDING_MATERIAL,
           // Force material onto the SolidPolygonLayer sub-layer — MVTLayer composite
