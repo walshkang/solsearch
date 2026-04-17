@@ -14,8 +14,7 @@ export interface SunLightConfig {
 
 function withMinutes(baseDate: Date, timeOfDayMinutes: number): Date {
   const date = new Date(baseDate)
-  date.setHours(0, 0, 0, 0)
-  date.setMinutes(timeOfDayMinutes)
+  date.setHours(Math.floor(timeOfDayMinutes / 60), timeOfDayMinutes % 60, 0, 0)
   return date
 }
 
@@ -45,8 +44,10 @@ export function getSunLightConfig(
   timeOfDayMinutes: number,
 ): SunLightConfig {
   const timestamp = withMinutes(currentDate, timeOfDayMinutes).getTime()
-  const normalizedAltitude = clamp((sunPos.altitude + Math.PI / 2) / Math.PI, 0, 1)
-  const intensity = clamp(0.2 + normalizedAltitude * 1.8, 0.2, 2)
+  // 0 at horizon, 1 at zenith — use only the above-horizon range (0–π/2)
+  const normalizedAltitude = clamp(sunPos.altitude / (Math.PI / 2), 0, 1)
+  // Ramps from 0.5 (low sun) to 2.0 (noon). Overdriving is fine — deck.gl clamps per-fragment.
+  const intensity = clamp(0.5 + normalizedAltitude * 1.5, 0, 2)
 
   return {
     timestamp,

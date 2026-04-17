@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useMemo } from 'react'
 import { AmbientLight, LightingEffect, _SunLight as SunLight } from '@deck.gl/core'
 import { MVTLayer } from '@deck.gl/geo-layers'
-import { GoogleMapsOverlay } from '@deck.gl/google-maps'
+import { MapboxOverlay, type MapboxOverlayProps } from '@deck.gl/mapbox'
 import { SolidPolygonLayer } from '@deck.gl/layers'
-import { useMap } from '@vis.gl/react-google-maps'
+import { useControl } from 'react-map-gl/maplibre'
 import { useAppStore } from '../../store/useAppStore'
 import { getSunLightConfig, getSunPosition } from '../../utils/sunMath'
 
@@ -12,127 +12,130 @@ type BuildingFeature = {
     render_height?: number
     height?: number
     levels?: number
-  }
+  } | null
 }
 
-// Phong material for buildings — diffuse + specular gives depth to faces
+export function getBuildingElevation(feature: BuildingFeature): number {
+  const p = feature.properties
+  if (!p) return 10
+  return p.render_height ?? p.height ?? (p.levels ? p.levels * 3.5 : 10)
+}
+
 const BUILDING_MATERIAL = {
-  ambient: 0.15,
-  diffuse: 0.7,
-  shininess: 24,
-  specularColor: [80, 90, 100] as [number, number, number],
+  ambient: 0.8,
+  diffuse: 0.6,
+  shininess: 8,
+  specularColor: [60, 70, 80] as [number, number, number],
 }
 
-// Ground responds to sun but low shininess — matte like concrete/asphalt
+// Multiply-blend ground plane: white = no change in sun, dark = shadow.
+// depthCompare: 'always' avoids z-fighting against MapLibre's ground tiles.
+// depthWriteEnabled: false so buildings still depth-test normally over it.
+const GROUND_SHADOW_PARAMETERS = {
+  blend: true,
+  blendColorSrcFactor: 'dst' as const,   // multiply: output.rgb = src.rgb × map.rgb
+  blendColorDstFactor: 'zero' as const,
+  blendAlphaSrcFactor: 'one' as const,
+  blendAlphaDstFactor: 'zero' as const,
+  depthWriteEnabled: false,
+  depthCompare: 'always' as const,
+}
+
+// diffuse: 3.0 overdriven — sunlit ground clamps to white (no tint), shadow ground = ambient×1.5 ≈ 0.5
+// With ambientIntensity=1.5: shadow = 0.6×1.5 = 0.9 → light shadow; lower ambient or diffuse to taste.
 const GROUND_MATERIAL = {
-  ambient: 0.25,
-  diffuse: 0.75,
-  shininess: 4,
-  specularColor: [20, 20, 20] as [number, number, number],
+  ambient: 0.35,
+  diffuse: 3.0,
+  shininess: 0,
+  specularColor: [0, 0, 0] as [number, number, number],
+}
+
+function useMapboxOverlay(props: MapboxOverlayProps) {
+  const overlay = useControl<MapboxOverlay>(() => new MapboxOverlay(props))
+  overlay.setProps(props)
+  return overlay
 }
 
 export default function DeckGLOverlay() {
-  const map = useMap()
-  const overlayRef = useRef<GoogleMapsOverlay | null>(null)
-
   const { currentDate, timeOfDayMinutes, mapViewState, layerToggles } = useAppStore()
 
   const sunPos = getSunPosition(mapViewState.lat, mapViewState.lng, currentDate, timeOfDayMinutes)
   const sunLightConfig = getSunLightConfig(sunPos, currentDate, timeOfDayMinutes)
 
   const lightingEffect = useMemo(() => {
-    // Ambient at 0.5 so night side of buildings isn't pitch black
     const ambientLight = new AmbientLight({
       color: [255, 255, 255],
-      intensity: 0.5,
+      intensity: layerToggles.showShadows ? 1.5 : 2.0,
     })
+
+    if (!layerToggles.showShadows) {
+      return new LightingEffect({ ambientLight })
+    }
 
     const sunLight = new SunLight({
       timestamp: sunLightConfig.timestamp,
       color: sunLightConfig.color,
       intensity: sunLightConfig.intensity,
+      _shadow: true,
     })
 
     return new LightingEffect({ ambientLight, sunLight })
-  }, [sunLightConfig.timestamp, sunLightConfig.intensity, sunLightConfig.color])
+  }, [sunLightConfig.timestamp, sunLightConfig.intensity, sunLightConfig.color, layerToggles.showShadows])
 
-  // Ground polygon: ~1.5 km box around current center
+  // Ground polygon: ~100 km box — large enough that the edge is always off-screen
+  // at any practical zoom level (viewport width ≈ 0.08° at zoom 15; d=1.0 is 12× that)
   const groundPolygon = useMemo(() => {
     const { lat, lng } = mapViewState
-    const d = 0.015 // ~1.5 km
-    return [
-      [lng - d, lat - d],
-      [lng + d, lat - d],
-      [lng + d, lat + d],
-      [lng - d, lat + d],
-    ]
+    const d = 1.0
+    return [[lng - d, lat - d], [lng + d, lat - d], [lng + d, lat + d], [lng - d, lat + d]]
   }, [mapViewState.lat, mapViewState.lng])
 
   const layers = useMemo(() => {
-    const nextLayers = []
+    const next = []
 
-    // Ground plane — always visible so streets/plazas have a surface that responds to sun
-    nextLayers.push(
-      new SolidPolygonLayer({
-        id: 'ground-plane',
-        data: [{ polygon: groundPolygon }],
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        getPolygon: (d: { polygon: number[][] }) => d.polygon as any,
-        getFillColor: [45, 48, 52, 255], // dark urban asphalt
-        extruded: false,
-        material: GROUND_MATERIAL,
-        pickable: false,
-      }),
-    )
-
-    if (layerToggles.showBuildings) {
-      nextLayers.push(
-        new MVTLayer({
-          id: 'osm-buildings-layer',
-          // Required env var: VITE_MAPTILER_KEY
-          data: `https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=${import.meta.env.VITE_MAPTILER_KEY}`,
-          // Cap tile fetching at zoom 14 (MapTiler v3 data limit); deck.gl overzooms above this
-          maxZoom: 14,
-          extruded: true,
-          loadOptions: {
-            mvt: {
-              layers: ['building'],
-            },
-          },
-          getElevation: (feature: BuildingFeature) =>
-            feature.properties.render_height ??
-            feature.properties.height ??
-            (feature.properties.levels ? feature.properties.levels * 3.5 : 10),
-          getFillColor: [74, 85, 104, 255],
-          material: BUILDING_MATERIAL,
+    // White ground plane with multiply blend — visible only as shadow.
+    // Must come before buildings so it renders at ground level first.
+    if (layerToggles.showShadows) {
+      next.push(
+        new SolidPolygonLayer({
+          id: 'ground-shadow',
+          data: [{ polygon: groundPolygon }],
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          getPolygon: (d: { polygon: number[][] }) => d.polygon as any,
+          getFillColor: [255, 255, 255, 255],
+          extruded: false,
+          material: GROUND_MATERIAL,
+          parameters: GROUND_SHADOW_PARAMETERS,
           pickable: false,
         }),
       )
     }
 
-    return nextLayers
-  }, [layerToggles.showBuildings, groundPolygon])
-
-  useEffect(() => {
-    if (!map) return
-
-    if (!overlayRef.current) {
-      overlayRef.current = new GoogleMapsOverlay({ interleaved: true })
-      overlayRef.current.setMap(map)
+    if (layerToggles.showBuildings) {
+      next.push(
+        new MVTLayer({
+          id: 'osm-buildings-layer',
+          data: `https://api.maptiler.com/tiles/v3/{z}/{x}/{y}.pbf?key=${import.meta.env.VITE_MAPTILER_KEY}`,
+          maxZoom: 14,
+          extruded: true,
+          loadOptions: { mvt: { layers: ['building'] } },
+          getElevation: (feature: BuildingFeature) => getBuildingElevation(feature),
+          getFillColor: [190, 185, 175, 255],
+          material: BUILDING_MATERIAL,
+          // Force material onto the SolidPolygonLayer sub-layer — MVTLayer composite
+          // chain doesn't always propagate material reliably, causing inconsistent lighting.
+          _subLayerProps: {
+            'polygons-fill': { material: BUILDING_MATERIAL },
+          },
+          pickable: false,
+        }),
+      )
     }
 
-    overlayRef.current.setProps({
-      layers,
-      effects: [lightingEffect],
-    })
-  }, [map, layers, lightingEffect])
+    return next
+  }, [layerToggles.showBuildings, layerToggles.showShadows, groundPolygon])
 
-  useEffect(() => {
-    return () => {
-      overlayRef.current?.setMap(null)
-      overlayRef.current = null
-    }
-  }, [])
+  useMapboxOverlay({ interleaved: true, layers, effects: [lightingEffect] })
 
   return null
 }

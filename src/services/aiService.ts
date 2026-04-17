@@ -37,32 +37,13 @@ export async function rankVenuesBySunExposure(
 Venues: ${JSON.stringify(venues, null, 2)}`;
 
   try {
-    const resp: any = await client.generate({
+    const resp = await client.models.generateContent({
       model: 'gemini-2.0-flash',
-      input: prompt,
-      generationConfig: { responseMimeType: 'application/json' },
+      contents: prompt,
+      config: { responseMimeType: 'application/json' },
     });
 
-    // Attempt to extract textual output in several common shapes
-    let textOutput = '';
-    if (resp?.output?.[0]?.content) {
-      // content may be an array of { type: 'output_text', text: '...' } or similar
-      for (const c of resp.output[0].content) {
-        if (typeof c === 'string') textOutput += c;
-        else if (c?.text) textOutput += c.text;
-        else if (c?.type === 'output_text' && c?.text) textOutput += c.text;
-      }
-    } else if (resp?.candidates?.[0]?.content) {
-      for (const c of resp.candidates[0].content) {
-        if (c?.text) textOutput += c.text;
-      }
-    } else if (typeof resp === 'string') {
-      textOutput = resp;
-    } else if (resp?.text) {
-      textOutput = resp.text;
-    } else {
-      textOutput = JSON.stringify(resp);
-    }
+    const textOutput = resp.text ?? '';
 
     // Extract JSON array from text
     const start = textOutput.indexOf('[');

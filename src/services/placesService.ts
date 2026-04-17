@@ -65,8 +65,8 @@ export async function searchNearbyVenues(
     return {
       id: String(id),
       name: String(name),
-      lat: Number.isFinite(lat) ? lat : 0,
-      lng: Number.isFinite(lng) ? lng : 0,
+      lat: Number.isFinite(lat) ? lat : NaN,
+      lng: Number.isFinite(lng) ? lng : NaN,
       address: String(address),
       types,
       rating,
@@ -74,5 +74,5 @@ export async function searchNearbyVenues(
     };
   });
 
-  return mapped;
+  return mapped.filter(p => Number.isFinite(p.lat) && Number.isFinite(p.lng));
 }
