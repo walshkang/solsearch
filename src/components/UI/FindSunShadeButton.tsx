@@ -29,7 +29,7 @@ const FindSunShadeButton: React.FC<Props> = ({ googleApiKey, geminiApiKey }) => 
     : moved
     ? 'Find sun & shade here'
     : lastSearchCenter
-    ? 'Find sun & shade'
+    ? 'Search again'
     : 'Find sun & shade'
 
   return (

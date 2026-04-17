@@ -21,10 +21,8 @@ export function getBuildingElevation(feature: BuildingFeature): number {
   return p.render_height ?? p.height ?? (p.levels ? p.levels * 3.5 : 10)
 }
 
-// Higher ambient so the unlit faces of buildings stay readable.
-// Reduced shininess — urban concrete isn't glossy.
 const BUILDING_MATERIAL = {
-  ambient: 0.5,
+  ambient: 0.8,
   diffuse: 0.6,
   shininess: 8,
   specularColor: [60, 70, 80] as [number, number, number],
@@ -43,12 +41,11 @@ const GROUND_SHADOW_PARAMETERS = {
   depthCompare: 'always' as const,
 }
 
-// diffuse: 5.0 is intentionally overdriven — GLSL clamps to [0,1].
-// Sunlit ground:  ambientIntensity×0.5 + sunIntensity×sin(alt)×5.0  → clamps to 1.0 (white)
-// Shadow ground:  ambientIntensity×0.5 ≈ 0.35  → multiply darkens map by ~65 %
+// diffuse: 3.0 overdriven — sunlit ground clamps to white (no tint), shadow ground = ambient×1.5 ≈ 0.5
+// With ambientIntensity=1.5: shadow = 0.6×1.5 = 0.9 → light shadow; lower ambient or diffuse to taste.
 const GROUND_MATERIAL = {
-  ambient: 0.5,
-  diffuse: 5.0,
+  ambient: 0.35,
+  diffuse: 3.0,
   shininess: 0,
   specularColor: [0, 0, 0] as [number, number, number],
 }
@@ -68,7 +65,7 @@ export default function DeckGLOverlay() {
   const lightingEffect = useMemo(() => {
     const ambientLight = new AmbientLight({
       color: [255, 255, 255],
-      intensity: layerToggles.showShadows ? 0.7 : 1.0,
+      intensity: layerToggles.showShadows ? 1.5 : 2.0,
     })
 
     if (!layerToggles.showShadows) {
@@ -123,7 +120,7 @@ export default function DeckGLOverlay() {
           extruded: true,
           loadOptions: { mvt: { layers: ['building'] } },
           getElevation: (feature: BuildingFeature) => getBuildingElevation(feature),
-          getFillColor: [74, 85, 104, 255],
+          getFillColor: [190, 185, 175, 255],
           material: BUILDING_MATERIAL,
           // Force material onto the SolidPolygonLayer sub-layer — MVTLayer composite
           // chain doesn't always propagate material reliably, causing inconsistent lighting.
