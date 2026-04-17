@@ -14,8 +14,10 @@ export interface SunLightConfig {
 
 function withMinutes(baseDate: Date, timeOfDayMinutes: number): Date {
   const date = new Date(baseDate)
-  date.setHours(0, 0, 0, 0)
-  date.setMinutes(timeOfDayMinutes)
+  // Zero to midnight UTC, then add minutes in UTC so the resulting Date's UTC fields
+  // represent the requested time-of-day independent of local timezone.
+  date.setUTCHours(0, 0, 0, 0)
+  date.setUTCMinutes(timeOfDayMinutes)
   return date
 }
 
