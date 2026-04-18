@@ -21,33 +21,35 @@ export function getBuildingElevation(feature: BuildingFeature): number {
   return p.render_height ?? p.height ?? (p.levels ? p.levels * 3.5 : 10)
 }
 
+// Building material — high ambient keeps faces away from sun visible.
 const BUILDING_MATERIAL = {
-  ambient: 0.8,
-  diffuse: 0.6,
+  ambient: 0.65,
+  diffuse: 0.5,
   shininess: 8,
   specularColor: [60, 70, 80] as [number, number, number],
 }
 
-// Multiply-blend ground plane: white = no change in sun, dark = shadow.
-// depthCompare: 'always' avoids z-fighting against MapLibre's ground tiles.
-// depthWriteEnabled: false so buildings still depth-test normally over it.
+// We use a high diffuse multiplier to ensure lit areas clamp to white,
+// while ambient: 0.35 ensures shadowed areas are distinctly darkened.
+const GROUND_SHADOW_MATERIAL = {
+  ambient: 0.35,
+  diffuse: 3.0,
+  shininess: 0,
+  specularColor: [0, 0, 0] as [number, number, number],
+}
+
+// Multiply-blend: output.rgb = src.rgb × dst.rgb (map tiles).
+// White src → no change. Gray src → darkens map.
+// depthCompare 'always': ground plane always draws (it's an overlay).
+// depthWriteEnabled false: doesn't block buildings from rendering on top.
 const GROUND_SHADOW_PARAMETERS = {
   blend: true,
-  blendColorSrcFactor: 'dst' as const,   // multiply: output.rgb = src.rgb × map.rgb
+  blendColorSrcFactor: 'dst' as const,
   blendColorDstFactor: 'zero' as const,
   blendAlphaSrcFactor: 'one' as const,
   blendAlphaDstFactor: 'zero' as const,
   depthWriteEnabled: false,
   depthCompare: 'always' as const,
-}
-
-// diffuse: 3.0 overdriven — sunlit ground clamps to white (no tint), shadow ground = ambient×1.5 ≈ 0.5
-// With ambientIntensity=1.5: shadow = 0.6×1.5 = 0.9 → light shadow; lower ambient or diffuse to taste.
-const GROUND_MATERIAL = {
-  ambient: 0.35,
-  diffuse: 3.0,
-  shininess: 0,
-  specularColor: [0, 0, 0] as [number, number, number],
 }
 
 function useMapboxOverlay(props: MapboxOverlayProps) {
@@ -65,7 +67,7 @@ export default function DeckGLOverlay() {
   const lightingEffect = useMemo(() => {
     const ambientLight = new AmbientLight({
       color: [255, 255, 255],
-      intensity: layerToggles.showShadows ? 1.5 : 2.0,
+      intensity: layerToggles.showShadows ? 1.0 : 2.0,
     })
 
     if (!layerToggles.showShadows) {
@@ -79,11 +81,12 @@ export default function DeckGLOverlay() {
       _shadow: true,
     })
 
-    return new LightingEffect({ ambientLight, sunLight })
+    const effect = new LightingEffect({ ambientLight, sunLight })
+
+    return effect
   }, [sunLightConfig.timestamp, sunLightConfig.intensity, sunLightConfig.color, layerToggles.showShadows])
 
-  // Ground polygon: ~100 km box — large enough that the edge is always off-screen
-  // at any practical zoom level (viewport width ≈ 0.08° at zoom 15; d=1.0 is 12× that)
+  // Ground polygon: large box centered on viewport — edges always off-screen.
   const groundPolygon = useMemo(() => {
     const { lat, lng } = mapViewState
     const d = 1.0
@@ -93,8 +96,9 @@ export default function DeckGLOverlay() {
   const layers = useMemo(() => {
     const next = []
 
-    // White ground plane with multiply blend — visible only as shadow.
-    // Must come before buildings so it renders at ground level first.
+    // Multiply-blended white ground plane — acts as the shadow receiver.
+    // Lit fragments → white → multiply = no visible change to map.
+    // Shadowed fragments → gray → multiply = map darkened proportionally.
     if (layerToggles.showShadows) {
       next.push(
         new SolidPolygonLayer({
@@ -103,8 +107,10 @@ export default function DeckGLOverlay() {
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
           getPolygon: (d: { polygon: number[][] }) => d.polygon as any,
           getFillColor: [255, 255, 255, 255],
-          extruded: false,
-          material: GROUND_MATERIAL,
+          extruded: true,
+          getElevation: 0,
+          getPolygonOffset: () => [0, 100],
+          material: GROUND_SHADOW_MATERIAL,
           parameters: GROUND_SHADOW_PARAMETERS,
           pickable: false,
         }),
@@ -122,8 +128,6 @@ export default function DeckGLOverlay() {
           getElevation: (feature: BuildingFeature) => getBuildingElevation(feature),
           getFillColor: [190, 185, 175, 255],
           material: BUILDING_MATERIAL,
-          // Force material onto the SolidPolygonLayer sub-layer — MVTLayer composite
-          // chain doesn't always propagate material reliably, causing inconsistent lighting.
           _subLayerProps: {
             'polygons-fill': { material: BUILDING_MATERIAL },
           },
